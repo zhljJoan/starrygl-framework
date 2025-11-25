@@ -1171,6 +1171,7 @@ class AsyncQueueRes{
 
 template <typename T = int64_t, typename TS = int64_t>
 class Graph {
+    thrust::device_vector<T> slice_ptr;
     thrust::device_vector<T>  chunk_ptr_, row_ptr_, row_idx_, col_idx_, col_chunk_, edge_id_, src_idx_;
     thrust::device_vector<TS> col_ts_;
     T  num_nodes_, num_edges_, chunk_size_;
@@ -1187,6 +1188,7 @@ class Graph {
     public:
     Graph(T n, T chunk_size, const torch::Tensor& src, const torch::Tensor& dst,
         const torch::Tensor& ts, const torch::Tensor& row_chunk_mapper,
+        const torch::Tensor & slice_ptr,
         uint64_t py_stream)
         : num_nodes_(n), chunk_size_(chunk_size)
     {
