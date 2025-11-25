@@ -1,0 +1,226 @@
+CMake Warning at /home/zlj/.miniconda3/envs/tgnn_3.10/lib/python3.10/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:22 (message):
+  static library kineto_LIBRARY-NOTFOUND not found.
+Call Stack (most recent call first):
+  /home/zlj/.miniconda3/envs/tgnn_3.10/lib/python3.10/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:127 (append_torchlib_if_found)
+  CMakeLists.txt:21 (find_package)
+
+
+starrygl
+CMake Warning at CMakeLists.txt:62 (add_library):
+  Cannot generate a safe runtime search path for target starrygl_sampler
+  because files in some directories may conflict with libraries in implicit
+  directories:
+
+    runtime library [libgomp.so.1] in /usr/lib/gcc/x86_64-linux-gnu/9 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+
+  Some of these libraries may not be found correctly.
+
+
+CMake Warning at CMakeLists.txt:62 (add_library):
+  Cannot generate a safe runtime search path for target starrygl_sampler
+  because there is a cycle in the constraint graph:
+
+    dir 0 is [/lib/intel64]
+    dir 1 is [/lib/intel64_win]
+    dir 2 is [/lib/win-x64]
+    dir 3 is [/home/zlj/.miniconda3/envs/tgnn_3.10/lib/python3.10/site-packages/torch/lib]
+      dir 4 must precede it due to runtime library [libcublas.so.11]
+    dir 4 is [/home/zlj/local/cuda-11.8/lib64]
+      dir 5 must precede it due to runtime library [libnvToolsExt.so.1]
+    dir 5 is [/home/zlj/.miniconda3/envs/tgnn_3.10/lib]
+      dir 4 must precede it due to runtime library [libnvrtc.so.11.2]
+
+  Some of these libraries may not be found correctly.
+
+
+CMake Warning at CMakeLists.txt:63 (add_library):
+  Cannot generate a safe runtime search path for target starrygl_comm because
+  files in some directories may conflict with libraries in implicit
+  directories:
+
+    runtime library [libcudart.so.11.0] in /home/zlj/local/cuda-11.8/lib64 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+    runtime library [libnvrtc.so.11.2] in /home/zlj/local/cuda-11.8/lib64 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+    runtime library [libgomp.so.1] in /usr/lib/gcc/x86_64-linux-gnu/9 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+    runtime library [libnvToolsExt.so.1] in /home/zlj/local/cuda-11.8/lib64 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+    runtime library [libcufft.so.10] in /home/zlj/local/cuda-11.8/lib64 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+    runtime library [libcurand.so.10] in /home/zlj/local/cuda-11.8/lib64 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+    runtime library [libcublas.so.11] in /home/zlj/local/cuda-11.8/lib64 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib/python3.10/site-packages/torch/lib
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+    runtime library [libcublasLt.so.11] in /home/zlj/local/cuda-11.8/lib64 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib/python3.10/site-packages/torch/lib
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+
+  Some of these libraries may not be found correctly.
+
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu:1:9: warning: #pragma once in main file
+    1 | #pragma once
+      |         ^~~~
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu:1:9: warning: #pragma once in main file
+    1 | #pragma once
+      |         ^~~~
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(22): error: no default constructor exists for class "starrygl::cuda::CUDASampler<PyCUDASampler::T, PyCUDASampler::TS>"
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(26): error: namespace "torch::cuda" has no member "set_device"
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(33): error: namespace "starrygl::cuda" has no member "transform_from_edge_index"
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): error: no suitable user-defined conversion from "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>>" to "pybind11::dict" exists
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(63): error: no suitable user-defined conversion from "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>>" to "pybind11::dict" exists
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(72): error: class "starrygl::cuda::CUDASampler<PyCUDASampler::T, PyCUDASampler::TS>" has no member "get_graph"
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(84): error: no suitable user-defined conversion from "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>>" to "pybind11::dict" exists
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(91): error: class "starrygl::cuda::CUDASampler<PyCUDASampler::T, PyCUDASampler::TS>" has no member "get_graph"
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(95): error: no suitable user-defined conversion from "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>>" to "pybind11::dict" exists
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(104): error: class "starrygl::cuda::CUDASampler<PyCUDASampler::T, PyCUDASampler::TS>" has no member "get_graph"
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(112): error: no suitable user-defined conversion from "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>>" to "pybind11::dict" exists
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(119): error: class "starrygl::cuda::CUDASampler<PyCUDASampler::T, PyCUDASampler::TS>" has no member "get_graph"
+
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(341): error: namespace "torch::cuda" has no member "set_device"
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(322): error: identifier "count_neighbors_kernel" is undefined
+          detected during:
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::Graph<T, TS>::sample_single_hop(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, int, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(154): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::Graph<T, TS>::sample_k_hop_neighbors(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, int, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1240): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_neighbors(const at::Tensor &, const at::Tensor &, T, int, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(45): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(355): error: identifier "sample_neighbors_kernel" is undefined
+          detected during:
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::Graph<T, TS>::sample_single_hop(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, int, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(154): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::Graph<T, TS>::sample_k_hop_neighbors(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, int, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1240): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_neighbors(const at::Tensor &, const at::Tensor &, T, int, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(45): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(950): error: identifier "mark_nodes_by_chunk_kernel" is undefined
+          detected during:
+            instantiation of "std::tuple<thrust::device_vector<T, thrust::device_allocator<T>>, thrust::device_vector<TS, thrust::device_allocator<TS>>, thrust::device_vector<T, thrust::device_allocator<T>>> starrygl::cuda::IndexSliceOperator<T, TS>::filter_nodes_by_chunk(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, T) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(863): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::IndexSliceOperator<T, TS>::slice_by_chunk_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, T, TS, TS, T) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1265): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_with_slice(const at::Tensor &, const at::Tensor &, T, int, TS, TS, T, T, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(58): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1082): error: identifier "mark_valid_nodes_kernel" is undefined
+          detected during:
+            instantiation of "std::tuple<thrust::device_vector<T, thrust::device_allocator<T>>, thrust::device_vector<T, thrust::device_allocator<T>>, thrust::device_vector<TS, thrust::device_allocator<TS>>, thrust::device_vector<int, thrust::device_allocator<int>>> starrygl::cuda::IndexSliceOperator<T, TS>::filter_edges_by_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, TS, TS, const thrust::device_vector<T, thrust::device_allocator<T>> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(867): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::IndexSliceOperator<T, TS>::slice_by_chunk_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, T, TS, TS, T) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1265): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_with_slice(const at::Tensor &, const at::Tensor &, T, int, TS, TS, T, T, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(58): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1094): error: identifier "mark_edges_by_time_range_kernel" is undefined
+          detected during:
+            instantiation of "std::tuple<thrust::device_vector<T, thrust::device_allocator<T>>, thrust::device_vector<T, thrust::device_allocator<T>>, thrust::device_vector<TS, thrust::device_allocator<TS>>, thrust::device_vector<int, thrust::device_allocator<int>>> starrygl::cuda::IndexSliceOperator<T, TS>::filter_edges_by_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, TS, TS, const thrust::device_vector<T, thrust::device_allocator<T>> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(867): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::IndexSliceOperator<T, TS>::slice_by_chunk_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, T, TS, TS, T) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1265): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_with_slice(const at::Tensor &, const at::Tensor &, T, int, TS, TS, T, T, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(58): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(693): error: identifier "build_mapping_kernel" is undefined
+          detected during:
+            instantiation of "void starrygl::cuda::DedupManager<T, TS>::build_node_mapping(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(676): here
+            instantiation of "void starrygl::cuda::DedupManager<T, TS>::dedup_nodes(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(575): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::DedupManager<T, TS>::dedup_and_remap(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(880): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::IndexSliceOperator<T, TS>::slice_by_chunk_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, T, TS, TS, T) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1265): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_with_slice(const at::Tensor &, const at::Tensor &, T, int, TS, TS, T, T, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(58): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(716): error: identifier "remap_edges_kernel" is undefined
+          detected during:
+            instantiation of "void starrygl::cuda::DedupManager<T, TS>::remap_edges(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(578): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::DedupManager<T, TS>::dedup_and_remap(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(880): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::IndexSliceOperator<T, TS>::slice_by_chunk_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, T, TS, TS, T) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1265): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_with_slice(const at::Tensor &, const at::Tensor &, T, int, TS, TS, T, T, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(58): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(746): error: identifier "count_degrees_kernel" is undefined
+          detected during:
+            instantiation of "void starrygl::cuda::DedupManager<T, TS>::build_optimized_csr(starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(581): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::DedupManager<T, TS>::dedup_and_remap(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(880): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::IndexSliceOperator<T, TS>::slice_by_chunk_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, T, TS, TS, T) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1265): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_with_slice(const at::Tensor &, const at::Tensor &, T, int, TS, TS, T, T, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(58): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(759): error: identifier "build_csr_kernel" is undefined
+          detected during:
+            instantiation of "void starrygl::cuda::DedupManager<T, TS>::build_optimized_csr(starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(581): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::DedupManager<T, TS>::dedup_and_remap(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(880): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::IndexSliceOperator<T, TS>::slice_by_chunk_time_range(const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, const thrust::device_vector<TS, thrust::device_allocator<TS>> &, const thrust::device_vector<int, thrust::device_allocator<int>> &, const thrust::device_vector<T, thrust::device_allocator<T>> &, T, T, TS, TS, T) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+(1265): here
+            instantiation of "starrygl::cuda::OptimizedSampleResult<T, TS> starrygl::cuda::CUDASampler<T, TS>::sample_with_slice(const at::Tensor &, const at::Tensor &, T, int, TS, TS, T, T, TS, TS) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(58): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1286): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1289): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1292): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1295): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1298): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1301): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1304): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1307): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+/home/zlj/Starrygl-v2.0/csrc/include/starrygl/sample.cu.hpp(1310): error: a nonstatic member reference must be relative to a specific object
+          detected during instantiation of "std::unordered_map<std::string, at::Tensor, std::hash<std::string>, std::equal_to<std::string>, std::allocator<std::pair<const std::string, at::Tensor>>> starrygl::cuda::CUDASampler<T, TS>::result_to_tensors(const starrygl::cuda::OptimizedSampleResult<T, TS> &) [with T=PyCUDASampler::T, TS=PyCUDASampler::TS]" 
+/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu(48): here
+
+31 errors detected in the compilation of "/home/zlj/Starrygl-v2.0/csrc/srcs/starrygl/export.cu".
+make[2]: *** [CMakeFiles/starrygl_comm.dir/build.make:95: CMakeFiles/starrygl_comm.dir/csrc/srcs/starrygl/export.cu.o] Error 1
+make[1]: *** [CMakeFiles/Makefile2:114: CMakeFiles/starrygl_comm.dir/all] Error 2
+make: *** [Makefile:94: all] Error 2
