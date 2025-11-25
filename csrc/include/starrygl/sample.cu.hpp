@@ -1186,9 +1186,12 @@ class Graph {
 
     thrust::device_vector<T> prefix_different_timestamp;
     public:
-    Graph(T n, T chunk_size, const torch::Tensor& src, const torch::Tensor& dst,
-        const torch::Tensor& ts, const torch::Tensor& row_chunk_mapper,
-        const torch::Tensor & slice_ptr,
+    Graph(T n, T chunk_size, 
+        const torch::Tensor& src, 
+        const torch::Tensor& dst,
+        const torch::Tensor& ts, 
+        const torch::Tensor& row_chunk_mapper,
+        const torch::Tensor & edge_slice,
         uint64_t py_stream)
         : num_nodes_(n), chunk_size_(chunk_size)
     {
