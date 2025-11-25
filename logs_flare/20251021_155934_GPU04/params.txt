@@ -1,0 +1,13 @@
+{
+    "model": "mpnn_lstm",
+    "dataset": "ia-slashdot-reply-dir",
+    "data_root": "/mnt/nfs/zlj/starrygl-data/",
+    "epochs": 1000,
+    "lr": 0.001,
+    "chunk_decay": "auto:0.1",
+    "chunk_order": "rand",
+    "snaps_count": 8,
+    "fulls_count": 2,
+    "no_routes": false,
+    "no_states": false
+}

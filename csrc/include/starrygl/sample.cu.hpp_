@@ -1,0 +1,1281 @@
+#pragma once
+#include <ATen/ATen.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAStream.h>
+#include <cuda_runtime.h>
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
+#include <thrust/sort.h>
+#include <thrust/unique.h>
+#include <thrust/binary_search.h>
+#include <thrust/remove.h>
+#include <thrust/sequence.h>
+#include <thrust/functional.h>
+#include <thrust/iterator/constant_iterator.h>
+#include <thrust/scan.h>
+#include <thrust/gather.h>
+#include <thrust/scatter.h>
+#include <thrust/copy.h>
+#include <thrust/execution_policy.h>
+#include <algorithm>
+#include <vector>
+#include <queue>
+#include <set>
+#include <unordered_map>
+#include <torch/torch.h>
+#include <starrygl.hpp>
+
+// Bloom Filter 参数优化
+#define BLOOM_SIZE 512  // 减小以适配 shared memory
+#define BLOOM_BITS (BLOOM_SIZE)
+#define BLOOM_BYTES ((BLOOM_SIZE + 7) / 8)
+#define NUM_HASH 3
+
+namespace starrygl {
+namespace cuda {
+
+// 优化的仿函数
+template <typename T, typename TS>
+struct PairFunctor {
+    __device__ thrust::pair<T, TS> operator()(T node, TS ts) const {
+        return thrust::make_pair(node, ts);
+    }
+};
+
+template <typename T, typename TS>
+struct FirstFunctor {
+    __device__ T operator()(const thrust::pair<T, TS>& pair) const {
+        return pair.first;
+    }
+};
+
+template <typename T, typename TS>
+struct SecondFunctor {
+    __device__ TS operator()(const thrust::pair<T, TS>& pair) const {
+        return pair.second;
+    }
+};
+
+// TemporalBlock 类（优化内存管理）
+template <typename T, typename TS>
+class TemporalBlock {
+    thrust::device_vector<T> col_idx_;
+    thrust::device_vector<T> row_ptr_;
+    thrust::device_vector<T> neighbors_;
+    thrust::device_vector<TS> neighbors_ts_;
+
+    thrust::device_vector<T> request_nid;
+    thrust::device_vector<TS> request_eid;
+
+public:
+    TemporalBlock() = default;
+    //edge_index构建成csr格式，同时去重索引，将节点重映射到requst_nid和request_eid上
+    TemporalBlock(thrust::device_vector<T> &rows, thrust::device_vector<TS> &cols,
+                  thrust::device_vector<T> &ts, thrust::device_vector<T> &edge_id){
+                    thrust::device_vector<T> 
+
+                  }
+    TemporalBlock(thrust::device_vector<T> neighbors, thrust::device_vector<TS> neighbors_ts,
+                  thrust::device_vector<T> row_ptr)
+        : neighbors_(std::move(neighbors)), neighbors_ts_(std::move(neighbors_ts)), 
+          row_ptr_(std::move(row_ptr)) {}
+
+    TemporalBlock(thrust::device_vector<T> col_idx, thrust::device_vector<T> neighbors,
+                  thrust::device_vector<TS> neighbors_ts, thrust::device_vector<T> row_ptr)
+        : col_idx_(std::move(col_idx)), neighbors_(std::move(neighbors)),
+          neighbors_ts_(std::move(neighbors_ts)), row_ptr_(std::move(row_ptr)) {}
+
+    // 获取设备向量
+    thrust::device_vector<T> get_col_idx() const { return col_idx_; }
+    thrust::device_vector<T> get_row_ptr() const { return row_ptr_; }
+    thrust::device_vector<T> get_neighbors() const { return neighbors_; }
+    thrust::device_vector<TS> get_neighbors_ts() const { return neighbors_ts_; }
+
+    //void remapping()
+    // 转换为 PyTorch 张量
+    torch::Tensor get_col_idx_tensor() const { 
+        return device_vector_to_tensor<T>(col_idx_); 
+    }
+    
+    torch::Tensor get_row_ptr_tensor() const { 
+        return device_vector_to_tensor<T>(row_ptr_); 
+    }
+    
+    torch::Tensor get_neighbors_tensor() const { 
+        return device_vector_to_tensor<T>(neighbors_); 
+    }
+    
+    torch::Tensor get_neighbors_ts_tensor() const { 
+        return device_vector_to_tensor<TS>(neighbors_ts_); 
+    }
+
+private:
+    template <typename DType>
+    torch::Tensor device_vector_to_tensor(const thrust::device_vector<DType>& vec) const {
+        if (vec.empty()) {
+            return torch::empty({0}, torch::TensorOptions().dtype(torch::kInt64).device(torch::kCUDA));
+        }
+        torch::Tensor tensor = torch::empty({(int64_t)vec.size()}, 
+            torch::TensorOptions().dtype(torch::kInt64).device(torch::kCUDA));
+        cudaMemcpy(tensor.data_ptr<DType>(), thrust::raw_pointer_cast(vec.data()), 
+                  vec.size() * sizeof(DType), cudaMemcpyDeviceToDevice);
+        return tensor;
+    }
+};
+
+// 优化的 Graph 类
+template <typename T, typename TS>
+class Graph {
+    thrust::device_vector<T> chunk_ptr_;
+    thrust::device_vector<T> row_reindex_;
+    thrust::device_vector<T> row_idx_;
+    thrust::device_vector<T> row_ptr_;
+    thrust::device_vector<T> row_chunk_mapper_;
+    thrust::device_vector<T> col_idx_;
+    thrust::device_vector<TS> col_ts_;
+    thrust::device_vector<T> edge_id_;
+    thrust::device_vector<T> col_chunk_;
+    thrust::device_vector<T> src_idx_;
+    int chunk_size_;
+    cudaStream_t stream_;
+    T num_nodes_;
+    T num_edges_;
+
+public:
+    Graph() : chunk_size_(0), stream_(nullptr), num_nodes_(0) {}
+
+    Graph(T n, T chunk_size, std::vector<std::tuple<T, T, TS, T>> edge_index,
+          std::vector<T> row_chunk_mapper, cudaStream_t stream = nullptr)
+        : chunk_size_(chunk_size), num_nodes_(n),
+          stream_(stream ? stream : c10::cuda::getCurrentCUDAStream().stream()) {
+
+        // 将数据复制到设备
+        thrust::host_vector<std::tuple<T, T, TS, T>> h_edge_index = edge_index;
+        thrust::device_vector<std::tuple<T, T, TS, T>> d_edge_index = h_edge_index;
+
+        thrust::host_vector<T> h_row_chunk_mapper = row_chunk_mapper;
+        row_chunk_mapper_ = thrust::device_vector<T>(h_row_chunk_mapper);
+
+        // 排序：按 chunk -> src -> ts -> dst_chunk -> dst 的顺序
+        auto cmp = [row_mapper = thrust::raw_pointer_cast(row_chunk_mapper_.data())] 
+                   __device__(const std::tuple<T, T, TS, T>& a, const std::tuple<T, T, TS, T>& b) {
+            T src_a = std::get<0>(a), src_b = std::get<0>(b);
+            T dst_a = std::get<1>(a), dst_b = std::get<1>(b);
+            TS ts_a = std::get<2>(a), ts_b = std::get<2>(b); 
+            T src_chunk_a = row_mapper[src_a];
+            T src_chunk_b = row_mapper[src_b];
+            if (src_chunk_a != src_chunk_b) return src_chunk_a < src_chunk_b;
+            if (src_a != src_b) return src_a < src_b;
+            if (ts_a != ts_b) return ts_a < ts_b;
+            
+            T dst_chunk_a = row_mapper[dst_a];
+            T dst_chunk_b = row_mapper[dst_b];
+            if (dst_chunk_a != dst_chunk_b) return dst_chunk_a < dst_chunk_b;
+            return dst_a < dst_b;
+        };
+
+        thrust::sort(thrust::cuda::par.on(stream_), d_edge_index.begin(), d_edge_index.end(), cmp);
+
+        // 初始化数据结构
+        T m = d_edge_index.size();
+        num_edges_ = m;
+        row_ptr_ = thrust::device_vector<T>(n + 1, 0);
+        row_idx_ = thrust::device_vector<T>(m);
+        row_reindex_ = thrust::device_vector<T>(n);
+        col_idx_ = thrust::device_vector<T>(m);
+        col_ts_ = thrust::device_vector<TS>(m);
+        col_chunk_ = thrust::device_vector<T>(m);
+        edge_id_ = thrust::device_vector<T>(m);
+        src_idx_ = thrust::device_vector<T>(m);
+        chunk_ptr_ = thrust::device_vector<T>(chunk_size_ + 1, 0);
+        
+        row_ptr_ = d_edge_index.f
+        // 构建图结构
+        dim3 block(256);
+        dim3 grid((m + 255) / 256);
+        build_graph_kernel<<<grid, block, 0, stream_>>>(
+            thrust::raw_pointer_cast(d_edge_index.data()),
+            thrust::raw_pointer_cast(row_ptr_.data()),
+            thrust::raw_pointer_cast(row_idx_.data()),
+            thrust::raw_pointer_cast(row_reindex_.data()),
+            thrust::raw_pointer_cast(col_idx_.data()),
+            thrust::raw_pointer_cast(col_ts_.data()),
+            thrust::raw_pointer_cast(col_chunk_.data()),
+            thrust::raw_pointer_cast(src_idx_.data()),
+            thrust::raw_pointer_cast(chunk_ptr_.data()),
+            thrust::raw_pointer_cast(edge_id_.data()),
+            thrust::raw_pointer_cast(row_chunk_mapper_.data()),
+            n, m, chunk_size_);
+        cudaStreamSynchronize(stream_);
+
+        post_build();
+    }
+
+    // 优化的构建内核
+
+    void post_build() {
+        // 使用 thrust 进行前缀和计算
+        thrust::unique(thrust::cuda::par.on(stream_), 
+                       row_idx_.begin(), row_idx_.end(), row_idx_.begin());
+        row_idx_.resize(num_nodes_);
+        thrust::device_vector<T> indices(num_nodes_);
+        thrust::sequence(indices.begin(), indices.end()); // indices = {0, 1, 2, ..., n-1}
+        thrust::scatter(indices.begin(), indices.end(), row_idx_.begin(), row_reindex_.begin());
+        thrust::device_vector<T> vec(row_ptr_);
+        thrust::transform(row_idx_.begin(), row_idx_.end(),thrust::make_constant_iterator(vec.data()), 
+                        row_ptr_.begin(),
+                      [] __device__(int index, int* b_ptr) {
+                          return b_ptr[index];  // 从 b 中获取值
+                      });
+
+
+        thrust::exclusive_scan(thrust::cuda::par.on(stream_), 
+                              row_ptr_.begin(), row_ptr_.end(), row_ptr_.begin());
+        thrust::exclusive_scan(thrust::cuda::par.on(stream_), 
+                              chunk_ptr_.begin(), chunk_ptr_.end(), chunk_ptr_.begin());
+
+    }
+
+    template<typename T, typename TS>
+    TemporalBlock<T, TS> sample_src_in_chunks_khop(
+        const thrust::device_vector<T>& chunks, T k, int layers, 
+        TS time_begin, TS time_end) {
+        //提前过滤时间戳，没有实现
+        auto seeds = get_nodes_in_chunks(chunks, time_begin, time_end);
+        thrust::device_vector<T> seed_nodes(seeds.get<0>().size()*2);
+        thrust::copy(seeds.get<0>().begin(), seeds.get<0>().end(), seed_nodes.begin());
+        thrust::copy(seeds.get<1>().begin(), seeds.get<1>().end(), seed_nodes.begin() + seeds.get<0>().size());
+        thrust::device_vector<TS> seed_ts = seeds.get<2>();
+        
+        //thrust::device_vector<T> seed_neg(seed_nodes.size(), time_begin);
+        thrust::device_vector<bool> chunk_exists(num_nodes_, false);
+        
+        // 标记存在的chunk
+        num_chunks_ = chunks.size();
+         // 排序chunks以便处理
+        mark_chunks_exists_kernel<<<(num_nodes_ + 255) / 256, 256, 0, stream_>>>(
+            thrust::raw_pointer_cast(sorted_chunks.data()),
+            num_chunks,
+            thrust::raw_pointer_cast(chunk_exists.data()),
+            num_nodes_
+        );
+        return sample_khop(seed_nodes, seed_ts, k, layers, time_begin, time_end, chunk_exists);
+    }
+    std::tuple<thrust::device_vector<T>, thrust::device_vector<T>,thrust::device_vector<TS>> get_chunk_nodes(
+        const thrust::device_vector<T>& chunks, TS time_begin, TS time_end) {
+        
+        if (chunks.empty()) {
+            return make_tuple(thrust::device_vector<T>(), thrust::device_vector<T>(), thrust::device_vector<TS>());
+        }
+
+        // 排序chunk以便处理
+        thrust::device_vector<T> sorted_chunks = chunks;
+        thrust::sort(thrust::cuda::par.on(stream_), sorted_chunks.begin(), sorted_chunks.end());
+        
+        size_t num_chunks = chunks.size();
+        
+        // 预计算chunk_exists数组（在host端准备）
+        thrust::device_vector<bool> chunk_exists(num_nodes_, false);
+        
+        // 标记存在的chunk
+        mark_chunks_exists_kernel<<<(num_nodes_ + 255) / 256, 256, 0, stream_>>>(
+            thrust::raw_pointer_cast(sorted_chunks.data()),
+            num_chunks,
+            thrust::raw_pointer_cast(chunk_exists.data()),
+            num_nodes_
+        );
+        
+        // 分配输出内存
+        thrust::device_vector<T> out_nodes(num_nodes_);
+        thrust::device_vector<TS> out_ts(num_nodes_);
+        thrust::device_vector<T> out_counts(num_nodes_, 0);
+        
+        // 配置内核参数
+        int warps_per_block = 4;
+        int threads_per_block = warps_per_block * 32;
+        int blocks = (num_chunks + warps_per_block - 1) / warps_per_block;
+        
+        size_t shared_mem_size = num_chunks * sizeof(T);  // 共享内存存储chunks列表
+
+        // 调用内核
+        filter_chunk_ts_kernel<<<blocks, threads_per_block, shared_mem_size, stream_>>>(
+            thrust::raw_pointer_cast(chunk_ptr_.data()),
+            thrust::raw_pointer_cast(row_ptr_.data()),
+            thrust::raw_pointer_cast(col_idx_.data()),
+            thrust::raw_pointer_cast(col_ts_.data()),
+            thrust::raw_pointer_cast(col_chunk_.data()),
+            thrust::raw_pointer_cast(sorted_chunks.data()),
+            num_chunks,
+            time_begin, time_end,
+            thrust::raw_pointer_cast(out_row_ptr.data()),
+            thrust::raw_pointer_cast(out_row_idx.data()),
+            thrust::raw_pointer_cast(out_neighbors.data()),
+            thrust::raw_pointer_cast(out_neighbors_ts.data()),
+            thrust::raw_pointer_cast(out_counts.data()),
+            num_nodes_,
+            thrust::raw_pointer_cast(chunk_exists.data()),
+            thrust::raw_pointer_cast(row_idx_.data())
+        );
+        cudaStreamSynchronize(stream_);
+        return make_tuple(out_row_ptr, out_row_idx, out_neighbors, out_neighbors_ts);
+    }
+
+    // 压缩结果
+    TemporalBlock<T, TS> slice_by_chunk_ts(
+        const thrust::device_vector<T>& chunks, TS time_begin, TS time_end) {
+        
+        if (chunks.empty()) {
+            return TemporalBlock<T, TS>();
+        }
+
+        // 排序chunk以便处理
+        //thrust::device_vector<T> sorted_chunks = chunks;
+        //thrust::sort(thrust::cuda::par.on(stream_), sorted_chunks.begin(), sorted_chunks.end());
+        
+        size_t num_chunks = chunks.size();
+        
+        // 预计算chunk_exists数组（在host端准备）
+        thrust::device_vector<bool> chunk_exists(num_nodes_, false);
+        
+        // 标记存在的chunk
+        mark_chunks_exists_kernel<<<(num_nodes_ + 255) / 256, 256, 0, stream_>>>(
+            thrust::raw_pointer_cast(sorted_chunks.data()),
+            num_chunks,
+            thrust::raw_pointer_cast(chunk_exists.data()),
+            num_nodes_
+        );
+        
+        // 分配输出内存
+        thrust::device_vector<T> out_counts(num_nodes_, 0);
+        thrust::device_vector<T> out_row_ptr(num_nodes_ + 1, 0);
+        
+        // 估计输出大小
+        size_t estimated_size = estimate_slice_size(sorted_chunks, time_begin, time_end);
+        thrust::device_vector<T> out_row_idx(estimated_size);
+        thrust::device_vector<T> out_col_idx(estimated_size);
+        thrust::device_vector<T> out_neighbors(estimated_size);
+        thrust::device_vector<TS> out_neighbors_ts(estimated_size);
+
+        // 配置内核参数
+        int warps_per_block = 4;
+        int threads_per_block = warps_per_block * 32;
+        int blocks = (num_chunks + warps_per_block - 1) / warps_per_block;
+        
+        size_t shared_mem_size = num_chunks * sizeof(T);  // 共享内存存储chunks列表
+
+        // 调用内核
+        filter_chunk_ts_kernel<<<blocks, threads_per_block, shared_mem_size, stream_>>>(
+            thrust::raw_pointer_cast(chunk_ptr_.data()),
+            thrust::raw_pointer_cast(row_ptr_.data()),
+            thrust::raw_pointer_cast(col_idx_.data()),
+            thrust::raw_pointer_cast(col_ts_.data()),
+            thrust::raw_pointer_cast(col_chunk_.data()),
+            thrust::raw_pointer_cast(sorted_chunks.data()),
+            num_chunks,
+            time_begin, time_end,
+            thrust::raw_pointer_cast(out_row_ptr.data()),
+            thrust::raw_pointer_cast(out_row_idx.data()),
+            thrust::raw_pointer_cast(out_col_idx.data()),
+            thrust::raw_pointer_cast(out_neighbors.data()),
+            thrust::raw_pointer_cast(out_neighbors_ts.data()),
+            thrust::raw_pointer_cast(out_counts.data()),
+            num_nodes_,
+            thrust::raw_pointer_cast(chunk_exists.data()),
+            thrust::raw_pointer_cast(row_idx_.data()),
+            
+        );
+        cudaStreamSynchronize(stream_);
+        return TemporalBlock<T, TS>(
+            std::move(out_row_idx), std::move(out_col_idx), 
+            std::move(out_neighbors), std::move(out_neighhbors_ts)
+        ); 
+        // 构建最终的CSR结构,缺这个算子
+       // return build_final_csr(out_counts, out_row_idx, out_neighbors, out_neighbors_ts);
+    }
+    
+        // 压缩结果
+    //     return compress_filtered_results(filtered_row_ptr, filtered_col_idx, 
+    //                                    filtered_neighbors, filtered_neighbors_ts, 
+    //                                    filtered_counts);
+    // }
+
+private:
+    // 估计过滤后的大小
+    size_t estimate_filtered_size(const thrust::device_vector<T>& sorted_chunks, 
+                                 TS time_begin, TS time_end) {
+        size_t total_size = 0;
+        for (T chunk : sorted_chunks) {
+            if (chunk < chunk_size_) {
+                T start = chunk_ptr_[chunk];
+                T end = chunk_ptr_[chunk + 1];
+                total_size += (end - start); // 保守估计
+            }
+        }
+        return std::min(total_size, static_cast<size_t>(col_idx_.size()));
+    }
+
+    // 压缩过滤结果
+    TemporalBlock<T, TS> compress_filtered_results(
+        thrust::device_vector<T>& row_ptr, thrust::device_vector<T>& col_idx,
+        thrust::device_vector<T>& neighbors, thrust::device_vector<TS>& neighbors_ts,
+        thrust::device_vector<T>& counts) {
+        
+        // 计算前缀和
+        thrust::device_vector<T> prefix(num_nodes_ + 1, 0);
+        thrust::exclusive_scan(thrust::cuda::par.on(stream_), 
+                              counts.begin(), counts.end(), prefix.begin() + 1);
+        
+        T total_size = prefix.back() + counts.back();
+        
+        // 重新分配精确大小的内存
+        thrust::device_vector<T> compressed_col_idx(total_size);
+        thrust::device_vector<T> compressed_neighbors(total_size);
+        thrust::device_vector<TS> compressed_neighbors_ts(total_size);
+        
+        // 压缩数据
+        compress_output_kernel<<<(num_nodes_ + 255) / 256, 256, 0, stream_>>>(
+            thrust::raw_pointer_cast(prefix.data()),
+            thrust::raw_pointer_cast(counts.data()),
+            thrust::raw_pointer_cast(col_idx.data()),
+            thrust::raw_pointer_cast(neighbors.data()),
+            thrust::raw_pointer_cast(neighbors_ts.data()),
+            thrust::raw_pointer_cast(compressed_col_idx.data()),
+            thrust::raw_pointer_cast(compressed_neighbors.data()),
+            thrust::raw_pointer_cast(compressed_neighbors_ts.data()),
+            num_nodes_
+        );
+        cudaStreamSynchronize(stream_);
+        
+        return TemporalBlock<T, TS>(std::move(compressed_col_idx), 
+                                   std::move(compressed_neighbors),
+                                   std::move(compressed_neighbors_ts), 
+                                   std::move(prefix));
+    }
+
+    // 单跳采样（使用warp级Bloom filter去重）
+    void sample_single_hop(const thrust::device_vector<T>& nodes, const thrust::device_vector<TS>& ts,
+                          T k, TS time_begin, TS time_end,
+                          thrust::device_vector<T>& out_neighbors, thrust::device_vector<TS>& out_neighbors_ts,
+                          thrust::device_vector<T>& out_edges_src, thrust::device_vector<T>& out_edges_dst,
+                          thrust::device_vector<TS>& out_edges_ts, thrust::device_vector<T>& chunk_exists) {
+
+        size_t num_nodes = nodes.size();
+        if (num_nodes == 0) return;
+
+        size_t max_out_size = num_nodes * k;
+        out_neighbors.resize(max_out_size);
+        out_neighbors_ts.resize(max_out_size);
+        out_edges_src.resize(max_out_size);
+        out_edges_dst.resize(max_out_size);
+        out_edges_ts.resize(max_out_size);
+
+        thrust::device_vector<T> out_counts(num_nodes, 0);
+
+        int warps_per_block = 4;
+        int blocks = (num_nodes + warps_per_block - 1) / warps_per_block;
+        int threads_per_block = warps_per_block * 32;
+
+        size_t shared_mem = BLOOM_BYTES * warps_per_block;
+
+        sample_single_hop_kernel<<<blocks, threads_per_block, shared_mem, stream_>>>(
+            thrust::raw_pointer_cast(nodes.data()),
+            thrust::raw_pointer_cast(ts.data()),
+            num_nodes, k,
+            thrust::raw_pointer_cast(row_ptr_.data()),
+            thrust::raw_pointer_cast(col_idx_.data()),
+            thrust::raw_pointer_cast(col_ts_.data()),
+            time_begin, time_end,
+            thrust::raw_pointer_cast(out_neighbors.data()),
+            thrust::raw_pointer_cast(out_neighbors_ts.data()),
+            thrust::raw_pointer_cast(out_edges_src.data()),
+            thrust::raw_pointer_cast(out_edges_dst.data()),
+            thrust::raw_pointer_cast(out_edges_ts.data()),
+            thrust::raw_pointer_cast(out_counts.data()),
+            thrust::raw_pointer_cast(chunk_exists.data()),
+        
+        );
+        cudaStreamSynchronize(stream_);
+
+        // 压缩输出
+        compress_sampled_output(out_neighbors, out_neighbors_ts, out_edges_src, 
+                               out_edges_dst, out_edges_ts, out_counts, num_nodes, k);
+    }
+    // k-hop采样主函数
+    TemporalBlock<T, TS> sample_khop(const thrust::device_vector<T>& seed_nodes,
+                                    const thrust::device_vector<TS>& seed_ts,
+                                    T k, int num_layers, TS time_begin, TS time_end,
+                                    thrust::device_vector<bool> &chunk_exists) {
+        thrust::device_vector<T> current_nodes = seed_nodes;
+        thrust::device_vector<TS> current_ts = seed_ts;
+
+        thrust::device_vector<T> all_neighbors, all_neighbors_ts;
+        thrust::device_vector<T> all_row_ptr = {0};
+
+        for (int layer = 0; layer < num_layers && !current_nodes.empty(); ++layer) {
+            thrust::device_vector<T> layer_neighbors, layer_neighbors_ts;
+            thrust::device_vector<T> layer_src, layer_dst;
+            thrust::device_vector<TS> layer_ts;
+
+            sample_single_hop(current_nodes, current_ts, k, time_begin, time_end,
+                            layer_neighbors, layer_neighbors_ts, layer_src, layer_dst, layer_ts, chunk_exists);
+
+            if (layer_neighbors.empty()) break;
+
+            // 合并结果
+            T current_size = all_neighbors.size();
+            all_neighbors.insert(all_neighbors.end(), layer_neighbors.begin(), layer_neighbors.end());
+            all_neighbors_ts.insert(all_neighbors_ts.end(), layer_neighbors_ts.begin(), layer_neighbors_ts.end());
+            all_row_ptr.push_back(all_row_ptr.back() + layer_neighbors.size());
+
+            // 准备下一层
+            current_nodes = std::move(layer_neighbors);
+            current_ts = std::move(layer_neighbors_ts);
+        }
+
+        return TemporalBlock<T, TS>(std::move(all_neighbors), std::move(all_neighbors_ts), std::move(all_row_ptr));
+    }
+
+    // // 辅助函数实现
+    // thrust::device_vector<T> get_nodes_in_chunks(const thrust::device_vector<T>& chunks) {
+    //     thrust::device_vector<T> sorted_chunks = chunks;
+    //     thrust::sort(thrust::cuda::par.on(stream_), sorted_chunks.begin(), sorted_chunks.end());
+        
+    //     thrust::device_vector<T> nodes;
+    //     thrust::device_vector<T> node_flags(num_nodes_, 0);
+
+    //     // 标记在指定chunk中的节点
+    //     mark_nodes_in_chunks_kernel<<<(num_nodes_ + 255) / 256, 256, 0, stream_>>>(
+    //         thrust::raw_pointer_cast(row_chunk_mapper_.data()),
+    //         thrust::raw_pointer_cast(sorted_chunks.data()),
+    //         sorted_chunks.size(),
+    //         thrust::raw_pointer_cast(node_flags.data()),
+    //         num_nodes_
+    //     );
+
+    //     // 收集标记的节点
+    //     thrust::device_vector<T> node_indices(num_nodes_);
+    //     thrust::sequence(thrust::cuda::par.on(stream_), node_indices.begin(), node_indices.end());
+        
+    //     auto new_end = thrust::copy_if(thrust::cuda::par.on(stream_),
+    //                                  node_indices.begin(), node_indices.end(),
+    //                                  node_flags.begin(),
+    //                                  thrust::back_inserter(nodes),
+    //                                  thrust::identity<T>());
+
+    //     return nodes;
+    // }
+
+
+    // TemporalBlock<T, TS> sample_khop_from_subgraph(const TemporalBlock<T, TS>& subgraph, 
+    //                                               T k, int layers, TS time_begin, TS time_end) {
+    //     // 从子图中提取所有节点作为种子
+    //     auto neighbors = subgraph.get_neighbors();
+    //     if (neighbors.empty()) {
+    //         return TemporalBlock<T, TS>();
+    //     }
+
+    //     // 去重获取唯一节点
+    //     thrust::sort(thrust::cuda::par.on(stream_), neighbors.begin(), neighbors.end());
+    //     auto new_end = thrust::unique(thrust::cuda::par.on(stream_), neighbors.begin(), neighbors.end());
+    //     neighbors.resize(thrust::distance(neighbors.begin(), new_end));
+
+    //     thrust::device_vector<TS> seed_ts(neighbors.size(), time_end);
+    //     return sample_khop(neighbors, seed_ts, k, layers, time_begin, time_end);
+    // }
+
+    // 压缩采样输出
+    void compress_sampled_output(thrust::device_vector<T>& neighbors, thrust::device_vector<TS>& neighbors_ts,
+                                thrust::device_vector<T>& edges_src, thrust::device_vector<T>& edges_dst,
+                                thrust::device_vector<TS>& edges_ts, const thrust::device_vector<T>& counts,
+                                size_t num_nodes, T k) {
+        thrust::device_vector<T> prefix(num_nodes + 1, 0);
+        thrust::exclusive_scan(thrust::cuda::par.on(stream_), 
+                              counts.begin(), counts.end(), prefix.begin() + 1);
+        
+        T total_size = prefix.back() + counts.back();
+        
+        if (total_size == 0) {
+            neighbors.clear(); neighbors_ts.clear();
+            edges_src.clear(); edges_dst.clear(); edges_ts.clear();
+            return;
+        }
+
+        thrust::device_vector<T> compacted_neighbors(total_size);
+        thrust::device_vector<TS> compacted_neighbors_ts(total_size);
+        thrust::device_vector<T> compacted_src(total_size);
+        thrust::device_vector<T> compacted_dst(total_size);
+        thrust::device_vector<TS> compacted_ts(total_size);
+
+        compress_output_kernel<<<(num_nodes + 255) / 256, 256, 0, stream_>>>(
+            thrust::raw_pointer_cast(prefix.data()),
+            thrust::raw_pointer_cast(counts.data()),
+            thrust::raw_pointer_cast(neighbors.data()),
+            thrust::raw_pointer_cast(neighbors_ts.data()),
+            thrust::raw_pointer_cast(edges_src.data()),
+            thrust::raw_pointer_cast(edges_dst.data()),
+            thrust::raw_pointer_cast(edges_ts.data()),
+            thrust::raw_pointer_cast(compacted_neighbors.data()),
+            thrust::raw_pointer_cast(compacted_neighbors_ts.data()),
+            thrust::raw_pointer_cast(compacted_src.data()),
+            thrust::raw_pointer_cast(compacted_dst.data()),
+            thrust::raw_pointer_cast(compacted_ts.data()),
+            num_nodes, k
+        );
+
+        neighbors = std::move(compacted_neighbors);
+        neighbors_ts = std::move(compacted_neighbors_ts);
+        edges_src = std::move(compacted_src);
+        edges_dst = std::move(compacted_dst);
+        edges_ts = std::move(compacted_ts);
+    }
+};
+template <typename T, typename TS>
+__global__ static void build_graph_kernel(const std::tuple<T, T, TS, T>* edges,
+                                   T* row_ptr, T* row_idx, T* row_reindex,
+                                   T* col_idx, TS* col_ts, T* col_chunk, T* src_idx,
+                                   T* chunk_ptr, T* edge_id, const T* row_chunk_mapper,
+                                   T n, T m, T chunk_size) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // 第一步：统计每个节点的出度
+    if (tid < m) {
+        auto [src, dst, ts, eid] = edges[tid];
+        auto old_ptr = atomicAdd(&row_ptr[src + 1], 1);
+        T chunk = row_chunk_mapper[src];
+        if (chunk < chunk_size && old_ptr == 0) {
+            auto old_chunk_ptr = atomicAdd(&chunk_ptr[chunk + 1], 1);
+        }
+    }
+    __syncthreads();
+    // 第二步：填充数据
+    if (tid < m) {
+        auto [src, dst, ts, eid] = edges[tid];
+        T start = chunk_ptr[row_chunk_mapper[src]];
+        // 计算在 CSR 中的位置
+        // T start = row_ptr[src];
+        // T pos = atomicAdd(&row_ptr[src + 1], 0); // 获取当前计数
+        
+        // // 写入数据
+        // col_idx[start + pos] = dst;
+        // col_ts[start + pos] = ts;
+        // col_chunk[start + pos] = row_chunk_mapper[dst];
+        col_idx[tid] = dst;
+        col_ts[tid] = ts;
+        edge_id[tid] = eid;
+        col_chunk[tid] = row_chunk_mapper[dst];
+        src_idx[tid] = src;
+        
+    }
+    __syncthreads();
+}
+
+    // 优化的chunk过滤内核
+template <typename T, typename TS>
+__global__ static void filter_chunk_ts_kernel(
+    const T* chunk_ptr, const T* row_ptr, const T* col_idx, const TS* col_ts, const T* col_chunk,
+    const T* chunks, size_t num_chunks, TS time_begin, TS time_end,
+    T* out_row_ptr, T* out_col_idx, T* out_neighbors, TS* out_neighbors_ts,
+    T* out_counts, T num_nodes, const bool* chunk_exists, T *row_idx_d) {
+    
+    int warp_id = threadIdx.x / 32;
+    int lane = threadIdx.x % 32;
+    int warps_per_block = blockDim.x / 32;
+    int global_warp_id = blockIdx.x * warps_per_block + warp_id;
+
+    if (global_warp_id >= num_chunks) return;
+
+    T chunk = chunks[global_warp_id];
+    T chunk_start = chunk_ptr[chunk];
+    T chunk_end = chunk_ptr[chunk + 1];
+
+    // 每个warp处理一个chunk，每个lane处理不同的row
+    for (T row_idx = chunk_start + lane; row_idx < chunk_end; row_idx += 32) {
+        T row = row_idx;
+        
+        T row_start = row_ptr[row];
+        T row_end = row_ptr[row + 1];
+        
+        if (row_start >= row_end) continue;
+
+        // 二分查找时间范围
+        T left = row_start;
+        T right = row_end;
+        
+        // 找到第一个 >= time_begin 的位置
+        while (left < right) {
+            T mid = left + (right - left) / 2;
+            if (col_ts[mid] < time_begin) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        T time_begin_idx = left;
+
+        // 找到第一个 > time_end 的位置
+        left = time_begin_idx;
+        right = row_end;
+        while (left < right) {
+            T mid = left + (right - left) / 2;
+            if (col_ts[mid] <= time_end) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        T time_end_idx = left;
+
+        // 统计符合条件的边数
+        T edge_count = 0;
+        for (T i = time_begin_idx; i < time_end_idx; i++) {
+            T dst_chunk = col_chunk[i];
+            // 使用预计算的chunk_exists数组快速检查
+            if (dst_chunk < num_nodes && chunk_exists[dst_chunk]) {
+                edge_count++;
+            }
+        }
+        
+        // 写入符合条件的边
+        if (edge_count > 0) {
+            T base_pos = atomicAdd(&out_counts[row], edge_count);
+            T written_count = 0;
+            
+            for (T i = time_begin_idx; i < time_end_idx && written_count < edge_count; i++) {
+                T dst_chunk = col_chunk[i];
+                
+                // 快速检查chunk存在性
+                if (dst_chunk < num_nodes && chunk_exists[dst_chunk]) {
+                    T dst_pos = base_pos + written_count;
+                    out_row_idx[dst_pos] = row_idx_d[row];
+                    out_neighbors[dst_pos] = col_idx[i];
+                    out_neighbors_ts[dst_pos] = col_ts[i];
+                    written_count++;
+                }
+            }
+        }
+    }
+}
+
+template <typename T, typename TS>
+__global__ static void filter_chunk_ts_only_src_kernel(
+    const T* chunk_ptr, const T* row_ptr, const T* col_idx, const TS* col_ts, const T* col_chunk,
+    const T* chunks, size_t num_chunks, TS time_begin, TS time_end,
+    T* out_row_ptr, T* out_col_idx, T* out_neighbors, TS* out_neighbors_ts,
+    T* out_counts, T num_nodes, const bool* chunk_exists, T *row_idx_d) {
+    
+    int warp_id = threadIdx.x / 32;
+    int lane = threadIdx.x % 32;
+    int warps_per_block = blockDim.x / 32;
+    int global_warp_id = blockIdx.x * warps_per_block + warp_id;
+
+    if (global_warp_id >= num_chunks) return;
+
+    T chunk = chunks[global_warp_id];
+    T chunk_start = chunk_ptr[chunk];
+    T chunk_end = chunk_ptr[chunk + 1];
+
+    // 每个warp处理一个chunk，每个lane处理不同的row
+    for (T row_idx = chunk_start + lane; row_idx < chunk_end; row_idx += 32) {
+        T row = row_idx;
+        
+        T row_start = row_ptr[row];
+        T row_end = row_ptr[row + 1];
+        
+        if (row_start >= row_end) continue;
+
+        // 二分查找时间范围
+        T left = row_start;
+        T right = row_end;
+        
+        // 找到第一个 >= time_begin 的位置
+        while (left < right) {
+            T mid = left + (right - left) / 2;
+            if (col_ts[mid] < time_begin) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        T time_begin_idx = left;
+
+        // 找到第一个 > time_end 的位置
+        left = time_begin_idx;
+        right = row_end;
+        while (left < right) {
+            T mid = left + (right - left) / 2;
+            if (col_ts[mid] <= time_end) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        T time_end_idx = left;
+
+        // 统计符合条件的边数
+        T edge_count = 0;
+        for (T i = time_begin_idx; i < time_end_idx; i++) {
+            T dst_chunk = col_chunk[i];
+            // 使用预计算的chunk_exists数组快速检查
+            if (dst_chunk < num_nodes) {
+                edge_count++;
+            }
+        }
+        
+        // 写入符合条件的边
+        if (edge_count > 0) {
+            T base_pos = atomicAdd(&out_counts[row], edge_count);
+            T written_count = 0;
+            
+            for (T i = time_begin_idx; i < time_end_idx && written_count < edge_count; i++) {
+                T dst_chunk = col_chunk[i];
+                
+                // 快速检查chunk存在性
+                if (dst_chunk < num_nodes) {
+                    T dst_pos = base_pos + written_count;
+                    out_col_idx[dst_pos] = row_idx_d[row];
+                    out_neighbors[dst_pos] = col_idx[i];
+                    out_neighbors_ts[dst_pos] = col_ts[i];
+                    written_count++;
+                }
+            }
+        }
+    }
+}
+template <typename T, typename TS>
+__global__ void mark_chunks_exists_kernel(const T* chunks, size_t num_chunks, 
+                                         bool* chunk_exists, T num_nodes) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < num_chunks) {
+        T chunk = chunks[tid];
+        if (chunk < num_nodes) {
+            chunk_exists[chunk] = true;
+        }
+    }
+}
+// 优化的采样内核（warp级Bloom filter）
+template <typename T, typename TS>
+__global__ static void sample_single_hop_kernel(
+    const T* nodes, const TS* ts, size_t num_nodes, T k,
+    const T* row_ptr, const T* col_idx, const TS* col_ts,
+    TS time_begin, TS time_end,
+    T* out_neighbors, TS* out_neighbors_ts,
+    T* out_edges_src, T* out_edges_dst, TS* out_edges_ts,
+    T* out_counts, const bool* chunk_exists) {
+    
+    extern __shared__ unsigned char bloom_shared[];
+    unsigned char* bloom = &bloom_shared[blockIdx.x * BLOOM_BYTES];
+    int warp_id = threadIdx.x / 32;
+    int lane = threadIdx.x % 32;
+    int warps_per_block = blockDim.x / 32;
+    int node_idx = blockIdx.x * warps_per_block + warp_id;
+    if (node_idx >= num_nodes) return;
+    T node = nodes[node_idx];
+    TS node_ts = ts[node_idx];
+    // 初始化warp的Bloom filter
+    for (int i = lane; i < BLOOM_BYTES; i += 32) {
+        bloom[i] = 0;
+    }
+    __syncwarp();
+    T start = row_ptr[node];
+    T end = row_ptr[node + 1];
+    T base_out = node_idx * k;
+    T local_count = 0;
+    // 遍历邻居
+    for (T idx = start + lane; idx < end && local_count < k; idx += 32) {
+        TS edge_ts = col_ts[idx];
+        T neighbor = col_idx[idx];
+        // 时间过滤
+        if (edge_ts < time_begin || edge_ts > time_end || edge_ts > node_ts) {
+            continue;
+        }
+        // Bloom filter检查（不精确去重）
+        unsigned h1 = (neighbor * 11400714819323198485ull) % BLOOM_BITS;
+        unsigned h2 = (neighbor * 17498005710864076877ull) % BLOOM_BITS;
+        unsigned h3 = (neighbor * 14000237116378154321ull) % BLOOM_BITS;
+        bool is_dup = (bloom[h1 / 8] & (1 << (h1 % 8))) &&
+                     (bloom[h2 / 8] & (1 << (h2 % 8))) &&
+                     (bloom[h3 / 8] & (1 << (h3 % 8)));
+        if (!is_dup) {
+            // 更新Bloom filter
+            atomicOr(&bloom[h1 / 8], 1 << (h1 % 8));
+            atomicOr(&bloom[h2 / 8], 1 << (h2 % 8));
+            atomicOr(&bloom[h3 / 8], 1 << (h3 % 8));
+            // 写入结果
+            if (local_count < k) {
+                T pos = base_out + local_count;
+                out_neighbors[pos] = neighbor;
+                out_neighbors_ts[pos] = edge_ts;
+                out_edges_src[pos] = node;
+                out_edges_dst[pos] = neighbor;
+                out_edges_ts[pos] = edge_ts;
+                local_count++;
+            }
+        }
+    }
+    // 更新计数
+    if (lane == 0) {
+        out_counts[node_idx] = local_count;
+    }
+}
+template <typename T, typename TS>
+__global__ static void sample_single_hop_kernel_nearest(
+    const T* nodes, const TS* ts, size_t num_nodes, T k,
+    const T* row_ptr, const T* col_idx, const TS* col_ts, const T* col_chunk,
+    TS time_begin, TS time_end,
+    T* out_neighbors, TS* out_neighbors_ts,
+    T* out_edges_src, T* out_edges_dst, TS* out_edges_ts,
+    T* out_counts, const bool* chunk_exists) {
+    
+    extern __shared__ unsigned char shared_mem[];
+    unsigned char* bloom = shared_mem;
+    
+    int warp_id = threadIdx.x / 32;
+    int lane = threadIdx.x % 32;
+    int warps_per_block = blockDim.x / 32;
+    int node_idx = blockIdx.x * warps_per_block + warp_id;
+    
+    if (node_idx >= num_nodes) return;
+    
+    T node = nodes[node_idx];
+    TS node_ts = ts[node_idx];
+    T base_out = node_idx * k;
+    
+    // 初始化Bloom filter
+    for (int i = lane; i < BLOOM_BYTES; i += 32) {
+        bloom[i] = 0;
+    }
+    __syncwarp();
+    
+    T start = row_ptr[node];
+    T end = row_ptr[node + 1];
+    
+    // 如果节点没有边，直接返回
+    if (start >= end) {
+        if (lane == 0) {
+            out_counts[node_idx] = 0;
+        }
+        return;
+    }
+    
+    // 二分查找：找到时间范围内最接近node_ts的k条边
+    
+    // 第一步：找到时间范围内的边界
+    T time_begin_idx = binary_search_lower_bound(col_ts, start, end, time_begin);
+    T time_end_idx = binary_search_upper_bound(col_ts, start, end, time_end);
+    
+    // 第二步：在时间范围内找到最接近node_ts的位置
+    T closest_idx = find_closest_timestamp(col_ts, time_begin_idx, time_end_idx, node_ts);
+    
+    if (closest_idx == end || col_ts[closest_idx] < time_begin) {
+        // 没有在时间范围内的边
+        if (lane == 0) {
+            out_counts[node_idx] = 0;
+        }
+        return;
+    }
+    
+    // 第三步：从最接近的位置向两边扩展，采样k条最近的边
+    T sampled_count = 0;
+    T left_idx = closest_idx;
+    T right_idx = closest_idx + 1;
+    
+    // 使用双指针法从中心向两边扩展
+    while (sampled_count < k && (left_idx >= time_begin_idx || right_idx < time_end_idx)) {
+        // 优先选择左边的边（时间更接近node_ts）
+        if (left_idx >= time_begin_idx) {
+            TS left_ts = col_ts[left_idx];
+            T left_neighbor = col_idx[left_idx];
+            T left_chunk = col_chunk[left_idx];
+            
+            if (chunk_exists[left_chunk]) {
+                // Bloom filter去重
+                unsigned h1 = (left_neighbor * 11400714819323198485ull) % BLOOM_BITS;
+                unsigned h2 = (left_neighbor * 17498005710864076877ull) % BLOOM_BITS;
+                unsigned h3 = (left_neighbor * 14000237116378154321ull) % BLOOM_BITS;
+                
+                bool is_dup = (bloom[h1 / 8] & (1 << (h1 % 8))) &&
+                             (bloom[h2 / 8] & (1 << (h2 % 8))) &&
+                             (bloom[h3 / 8] & (1 << (h3 % 8)));
+                
+                if (!is_dup) {
+                    atomicOr(&bloom[h1 / 8], 1 << (h1 % 8));
+                    atomicOr(&bloom[h2 / 8], 1 << (h2 % 8));
+                    atomicOr(&bloom[h3 / 8], 1 << (h3 % 8));
+                    
+                    T pos = base_out + sampled_count;
+                    out_neighbors[pos] = left_neighbor;
+                    out_neighbors_ts[pos] = left_ts;
+                    out_edges_src[pos] = node;
+                    out_edges_dst[pos] = left_neighbor;
+                    out_edges_ts[pos] = left_ts;
+                    sampled_count++;
+                }
+            }
+            left_idx--;
+        }
+        
+        if (sampled_count >= k) break;
+        
+        // 然后选择右边的边
+        if (right_idx < time_end_idx) {
+            TS right_ts = col_ts[right_idx];
+            T right_neighbor = col_idx[right_idx];
+            T right_chunk = col_chunk[right_idx];
+            
+            if (chunk_exists[right_chunk]) {
+                // Bloom filter去重
+                unsigned h1 = (right_neighbor * 11400714819323198485ull) % BLOOM_BITS;
+                unsigned h2 = (right_neighbor * 17498005710864076877ull) % BLOOM_BITS;
+                unsigned h3 = (right_neighbor * 14000237116378154321ull) % BLOOM_BITS;
+                
+                bool is_dup = (bloom[h1 / 8] & (1 << (h1 % 8))) &&
+                             (bloom[h2 / 8] & (1 << (h2 % 8))) &&
+                             (bloom[h3 / 8] & (1 << (h3 % 8)));
+                
+                if (!is_dup) {
+                    atomicOr(&bloom[h1 / 8], 1 << (h1 % 8));
+                    atomicOr(&bloom[h2 / 8], 1 << (h2 % 8));
+                    atomicOr(&bloom[h3 / 8], 1 << (h3 % 8));
+                    
+                    T pos = base_out + sampled_count;
+                    out_neighbors[pos] = right_neighbor;
+                    out_neighbors_ts[pos] = right_ts;
+                    out_edges_src[pos] = node;
+                    out_edges_dst[pos] = right_neighbor;
+                    out_edges_ts[pos] = right_ts;
+                    sampled_count++;
+                }
+            }
+            right_idx++;
+        }
+    }
+    
+    // 更新计数
+    if (lane == 0) {
+        out_counts[node_idx] = sampled_count;
+    }
+}
+
+// 辅助函数：找到最接近目标时间戳的位置
+template <typename T, typename TS>
+__device__ T find_closest_timestamp(const TS* arr, T left, T right, TS target) {
+    if (left >= right) return right;
+    
+    T low = left;
+    T high = right - 1;
+    
+    while (low <= high) {
+        T mid = low + (high - low) / 2;
+        
+        if (arr[mid] == target) {
+            return mid;
+        } else if (arr[mid] < target) {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    
+    // 找到最接近的位置
+    if (low >= right) return right - 1;
+    if (high < left) return left;
+    
+    // 比较low和high哪个更接近
+    TS diff_low = (low < right) ? abs(arr[low] - target) : INT_MAX;
+    TS diff_high = (high >= left) ? abs(arr[high] - target) : INT_MAX;
+    
+    return (diff_low <= diff_high) ? low : high;
+}
+
+// 辅助函数：二分查找下界
+template <typename T, typename TS>
+__device__ T binary_search_lower_bound(const TS* arr, T left, T right, TS value) {
+    while (left < right) {
+        T mid = left + (right - left) / 2;
+        if (arr[mid] < value) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
+}
+
+// 辅助函数：二分查找上界
+template <typename T, typename TS>
+__device__ T binary_search_upper_bound(const TS* arr, T left, T right, TS value) {
+    while (left < right) {
+        T mid = left + (right - left) / 2;
+        if (arr[mid] <= value) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
+}
+// 辅助内核函数
+template <typename T, typename TS>
+__global__ void mark_nodes_in_chunks_kernel(const T* row_chunk_mapper, const T* chunks, 
+                                           size_t num_chunks, T* node_flags, T num_nodes) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= num_nodes) return;
+
+    T chunk = row_chunk_mapper[tid];
+    // 二分查找检查chunk是否在集合中
+    T left = 0, right = num_chunks - 1;
+    while (left <= right) {
+        T mid = (left + right) / 2;
+        if (chunks[mid] == chunk) {
+            node_flags[tid] = 1;
+            return;
+        } else if (chunks[mid] < chunk) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+}
+
+// __global__ void filter_both_chunks_kernel(const T* row_ptr, const T* col_idx, const TS* col_ts, 
+//                                          const T* col_chunk, const T* chunks, size_t num_chunks,
+//                                          TS time_begin, TS time_end, T* out_row_ptr, 
+//                                          const T* row_chunk_mapper, T num_nodes) {
+//     int tid = blockIdx.x * blockDim.x + threadIdx.x;
+//     if (tid >= num_nodes) return;
+
+//     T src_chunk = row_chunk_mapper[tid];
+//     // 检查源chunk是否在集合中
+//     bool src_valid = false;
+//     T left = 0, right = num_chunks - 1;
+//     while (left <= right) {
+//         T mid = (left + right) / 2;
+//         if (chunks[mid] == src_chunk) {
+//             src_valid = true;
+//             break;
+//         } else if (chunks[mid] < src_chunk) {
+//             left = mid + 1;
+//         } else {
+//             right = mid - 1;
+//         }
+//     }
+
+//     if (!src_valid) return;
+
+//     T start = row_ptr[tid];
+//     T end = row_ptr[tid + 1];
+//     T count = 0;
+
+//     for (T i = start; i < end; i++) {
+//         TS edge_ts = col_ts[i];
+//         T dst_chunk = col_chunk[i];
+        
+//         // 检查时间范围和目标chunk
+//         if (edge_ts >= time_begin && edge_ts <= time_end) {
+//             // 检查目标chunk
+//             left = 0; right = num_chunks - 1;
+//             while (left <= right) {
+//                 T mid = (left + right) / 2;
+//                 if (chunks[mid] == dst_chunk) {
+//                     count++;
+//                     break;
+//                 } else if (chunks[mid] < dst_chunk) {
+//                     left = mid + 1;
+//                 } else {
+//                     right = mid - 1;
+//                 }
+//             }
+//         }
+//     }
+
+//     out_row_ptr[tid + 1] = count;
+// }
+template <typename T, typename TS>
+__global__ void compress_output_kernel(const T* prefix, const T* counts, 
+                                      const T* in_neighbors, const TS* in_neighbors_ts,
+                                      const T* in_src, const T* in_dst, const TS* in_ts,
+                                      T* out_neighbors, TS* out_neighbors_ts,
+                                      T* out_src, T* out_dst, TS* out_ts,
+                                      size_t num_nodes, T k) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= num_nodes) return;
+
+    T start = prefix[tid];
+    T count = counts[tid];
+    T base_in = tid * k;
+
+    for (T i = 0; i < count; ++i) {
+        out_neighbors[start + i] = in_neighbors[base_in + i];
+        out_neighbors_ts[start + i] = in_neighbors_ts[base_in + i];
+        out_src[start + i] = in_src[base_in + i];
+        out_dst[start + i] = in_dst[base_in + i];
+        out_ts[start + i] = in_ts[base_in + i];
+    }
+}
+
+// CUDAGraph 包装类（保持不变）
+class CUDAGraph {
+public:
+    using T = int64_t;
+    using TS = int64_t;
+    using Graph_T = Graph<T, TS>;
+    using Block_T = TemporalBlock<T, TS>;
+    
+    Graph_T graph_;
+
+    CUDAGraph(Graph_T g) : graph_(std::move(g)) {}
+
+    // Block_T sample_both_in_chunks_khop(const torch::Tensor& chunks_tensor, T k, int layer, 
+    //                                   TS time_begin, TS time_end) {
+    //     thrust::device_vector<T> chunks = tensor_to_device_vector<T>(chunks_tensor);
+    //     return graph_.sample_both_in_chunks_khop(chunks, k, layer, time_begin, time_end);
+    // }
+
+    Block_T sample_src_in_chunks_khop(const torch::Tensor& chunks_tensor, T k, int layer, 
+                                     TS time_begin, TS time_end) {
+        thrust::device_vector<T> chunks = tensor_to_device_vector<T>(chunks_tensor);
+        return graph_.sample_src_in_chunks_khop(chunks, k, layer, time_begin, time_end);
+    }
+
+    Block_T slice_by_chunk_ts(const torch::Tensor& chunks_tensor, TS time_begin, TS time_end) {
+        thrust::device_vector<T> chunks = tensor_to_device_vector<T>(chunks_tensor);
+        return graph_.slice_by_chunk_ts(chunks, time_begin, time_end);
+    }
+
+private:
+    template <typename DType>
+    thrust::device_vector<DType> tensor_to_device_vector(const torch::Tensor& tensor) {
+        thrust::device_vector<DType> vec(tensor.numel());
+        cudaMemcpy(thrust::raw_pointer_cast(vec.data()), tensor.data_ptr<DType>(), 
+                  tensor.numel() * sizeof(DType), cudaMemcpyDeviceToDevice);
+        return vec;
+    }
+};
+
+// CUDA 转换函数
+CUDAGraph transform_from_edge_index_cuda(size_t n, size_t chunk_size, 
+                                        torch::Tensor src, torch::Tensor dst, torch::Tensor ts, 
+                                        torch::Tensor row_mapper) {
+    using T = int64_t;
+    using TS = int64_t;
+    
+    size_t e = src.size(0);
+    std::vector<std::tuple<T, T, TS, T>> edge_index(e);
+    
+    T* src_ptr = src.data_ptr<T>();
+    T* dst_ptr = dst.data_ptr<T>();
+    TS* ts_ptr = ts.data_ptr<TS>();
+    
+    for (size_t i = 0; i < e; i++) {
+        edge_index[i] = std::make_tuple(src_ptr[i], dst_ptr[i], ts_ptr[i]);
+    }
+    
+    std::vector<T> row_mapper_vec(n);
+    std::copy(row_mapper.data_ptr<T>(), row_mapper.data_ptr<T>() + n, row_mapper_vec.begin());
+    
+    Graph<T, TS> g(n, chunk_size, std::move(edge_index), std::move(row_mapper_vec));
+    return CUDAGraph(std::move(g));
+}
+
+}  // namespace cuda
+}  // namespace starrygl
