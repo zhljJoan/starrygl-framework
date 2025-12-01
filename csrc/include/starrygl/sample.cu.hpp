@@ -15,6 +15,9 @@
 #include <pybind11/pybind11.h>
 #include <error.cu.hpp>
 #include <cstring>
+#include <future>
+#include <queue>
+#include <memory>
 namespace py = pybind11;
 typedef unsigned long long ULL;
 #define BLOOM_SIZE 512
@@ -57,49 +60,49 @@ __device__ bool edge_cmp(const Edge<T,TS>& a, const Edge<T,TS>& b) {
 // ------------------------------------------------------------------
 // 5. 所有 kernel 实现
 // ------------------------------------------------------------------
-template <typename T = int64_t, typename TS = int64_t>
-__global__ void hash_based_remapping_kernel(T* nodes_id, int* mappings,
-                                          int* hash_table, int* hash_counts,
-                                          int table_size, int total_nodes,
-                                          float duplication_tolerance) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+// template <typename T = int64_t, typename TS = int64_t>
+// __global__ void hash_based_remapping_kernel(T* nodes_id, int* mappings,
+//                                           int* hash_table, int* hash_counts,
+//                                           int table_size, int total_nodes,
+//                                           float duplication_tolerance) {
+//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
-    if (idx < total_nodes) {
-        int node_id = sampled_nodes[idx];
-        int hash_index = node_id % table_size;
+//     if (idx < total_nodes) {
+//         int node_id = sampled_nodes[idx];
+//         int hash_index = node_id % table_size;
         
-        // 线性探测解决冲突
-        int probe_count = 0;
-        while (probe_count < table_size) {
-            int current_node = hash_table[hash_index];
+//         // 线性探测解决冲突
+//         int probe_count = 0;
+//         while (probe_count < table_size) {
+//             int current_node = hash_table[hash_index];
             
-            if (current_node == -1) {
-                // 空槽，插入新节点
-                atomicExch(&hash_table[hash_index], node_id);
-                atomicAdd(&hash_counts[hash_index], 1);
-                mappings[idx] = hash_index;  // 使用哈希索引作为局部ID
-                break;
-            }
-            else if (current_node == node_id) {
-                // 找到相同节点
-                atomicAdd(&hash_counts[hash_index], 1);
-                mappings[idx] = hash_index;
-                break;
-            }
-            else {
-                // 冲突，继续探测
-                hash_index = (hash_index + 1) % table_size;
-                probe_count++;
+//             if (current_node == -1) {
+//                 // 空槽，插入新节点
+//                 atomicExch(&hash_table[hash_index], node_id);
+//                 atomicAdd(&hash_counts[hash_index], 1);
+//                 mappings[idx] = hash_index;  // 使用哈希索引作为局部ID
+//                 break;
+//             }
+//             else if (current_node == node_id) {
+//                 // 找到相同节点
+//                 atomicAdd(&hash_counts[hash_index], 1);
+//                 mappings[idx] = hash_index;
+//                 break;
+//             }
+//             else {
+//                 // 冲突，继续探测
+//                 hash_index = (hash_index + 1) % table_size;
+//                 probe_count++;
                 
-                // 如果冲突过多，容忍重复
-                if (probe_count > table_size * duplication_tolerance) {
-                    mappings[idx] = hash_index;  // 强制映射，接受重复
-                    break;
-                }
-            }
-        }
-    }
-}
+//                 // 如果冲突过多，容忍重复
+//                 if (probe_count > table_size * duplication_tolerance) {
+//                     mappings[idx] = hash_index;  // 强制映射，接受重复
+//                     break;
+//                 }
+//             }
+//         }
+//     }
+// }
 // //线程级别的去重吗？每个chunk单独去重
 // template <typename T = int64_t, typename TS = int64_t>
 // __global__ void get_reindx_by_hash(T* nodes_id, int* mappings, int *reindex_cnt,
@@ -150,7 +153,7 @@ __device__ T upper_bound(const TS* arr, T l, T r, TS v) {
 template <typename T = int64_t, typename TS = int64_t>
 __global__ void build_graph_kernel(
     const Edge_T* edges, T* row_ptr, T* col_idx, TS* col_ts,
-    T* col_chunk, T* edge_id, T* src_idx, T* chunk_ptr,
+    T* col_chunk, T* edge_id, T* src_idx, T* chunk_ptr, 
      T n, T m, T chunk_size
 ) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -290,229 +293,229 @@ __device__ __forceinline__ int warp_upper_bound(const TS* base, int count, TS va
 // // ======================
 // // 3. 阶段 1：统计边数
 // // ======================
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void count_edges_kernel(
-//     const T* __restrict__ chunk_ptr,
-//     const T* __restrict__ row_ptr,
-//     const T* __restrict__ row_idx,
-//     const TS* __restrict__ col_ts,
-//     const T* __restrict__ col_chunk,
-//     const T* __restrict__ chunks,
-//     const bool* __restrict__ chunk_exists,
-//     T num_chunks,
-//     T num_nodes,
-//     TS t_begin,
-//     TS t_end,
+template <typename T = int64_t, typename TS = int64_t>
+__global__ void count_edges_kernel(
+    const T* __restrict__ chunk_ptr,
+    const T* __restrict__ row_ptr,
+    const T* __restrict__ row_idx,
+    const TS* __restrict__ col_ts,
+    const T* __restrict__ col_chunk,
+    const T* __restrict__ chunks,
+    const bool* __restrict__ chunk_exists,
+    T num_chunks,
+    T num_nodes,
+    TS t_begin,
+    TS t_end,
     
 
-//     // T* __restrict__ output_row_idx,
-//     // T* __restrict__ output_row_ts,
-//     // T* __restrict__ output_row_ts_counts,
-//     // T* __restrict__ ts_count
-//     T* __restrict__ counts_nodes_buffer,
-//     T* __restrict__ counts_ts_buffer,
-//     T* __restrict__ counts_col_buffer,
-//     bool use_full_timestamps
-// ) {
-//     //每个block处理一个chunk,每个warp处理一个节点，每个线程处理每条边
-//     int block_idx = blockIdx.x;
-//     int global_warp_id = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
-//     int warp_id = threadIdx.x / 32;
-//     int warps_per_block = blockDim.x / 32;
-//     int lane = threadIdx.x % 32;
-//     counts_nodes_buffer[global_warp_id] = 0;
-//     counts_ts_buffer[global_warp_id] = 0;
-//     counts_col_buffer[global_warp_id] = 0;
+    // T* __restrict__ output_row_idx,
+    // T* __restrict__ output_row_ts,
+    // T* __restrict__ output_row_ts_counts,
+    // T* __restrict__ ts_count
+    T* __restrict__ counts_nodes_buffer,
+    T* __restrict__ counts_ts_buffer,
+    T* __restrict__ counts_col_buffer,
+    bool use_full_timestamps
+) {
+    //每个block处理一个chunk,每个warp处理一个节点，每个线程处理每条边
+    int block_idx = blockIdx.x;
+    int global_warp_id = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    int warp_id = threadIdx.x / 32;
+    int warps_per_block = blockDim.x / 32;
+    int lane = threadIdx.x % 32;
+    counts_nodes_buffer[global_warp_id] = 0;
+    counts_ts_buffer[global_warp_id] = 0;
+    counts_col_buffer[global_warp_id] = 0;
 
-//     while(block_idx < num_chunks){
-//         T chunk = chunks[block_idx];
-//         T chunk_start = chunk_ptr[block_idx];
-//         T chunk_end = chunk_ptr[block_idx + 1];
-//         if(chunk_start >= chunk_end){
-//             block_idx += gridDim.x;
-//             continue;
-//         }
+    while(block_idx < num_chunks){
+        T chunk = chunks[block_idx];
+        T chunk_start = chunk_ptr[block_idx];
+        T chunk_end = chunk_ptr[block_idx + 1];
+        if(chunk_start >= chunk_end){
+            block_idx += gridDim.x;
+            continue;
+        }
         
-//         for(T row_x = chunk_start + warp_id; row_x < chunk_end ; row_x += warps_per_block){
-//             T node_idx = row_idx[row_x];
-//             if(node_idx >= num_nodes) break;
+        for(T row_x = chunk_start + warp_id; row_x < chunk_end ; row_x += warps_per_block){
+            T node_idx = row_idx[row_x];
+            if(node_idx >= num_nodes) break;
 
-//             T row = node_idx;
-//             T rs = row_ptr[node_idx];
-//             T re = row_ptr[node_idx + 1];
+            T row = node_idx;
+            T rs = row_ptr[node_idx];
+            T re = row_ptr[node_idx + 1];
             
-//             if(rs >= re) continue;
+            if(rs >= re) continue;
 
-//             if (rs >= re) continue;
-//             //计算时间范围
-//             T left  = lower_bound(col_ts, rs, re, t_begin);
-//             T right = upper_bound(col_ts, left, re, t_end);
-//             if (left >= right) continue;
-//             if(lane == 0)
-//                 counts_nodes_buffer[global_warp_id] += 1;
-//             if(use_full_timestamps){
-//                 if(lane == 0)   
-//                     counts_ts_buffer[global_warp_id] += t_end - t_begin;
-//             }
-//             else{
-//                 int local_count_ts = 0;
-//                 for(T e = left + lane; e < right; e +=32){
-//                     if(e > left && col_ts[e] != col_ts[e-1]){
-//                         local_count_ts++;
-//                     }
-//                 }
-//                 warp_reduce_sum(local_count_ts);
-//                 if(lane == 0){
-//                     counts_ts_buffer[global_warp_id] += local_count_ts;
-//                 }
-//             }
-//             int local_count_col = 0;
-//             for(T e = left + lane; e < right; e += 32) {
-//                 if (e >= right) break;
-//                 T dst_c = col_chunk[e];
-//                 if (dst_c < num_nodes && chunk_exists[dst_c]) {
-//                     local_count_col++;
-//                 }
-//             }
-//             warp_reduce_sum(local_count_col);
-//             if(lane == 0)
-//                 counts_col_buffer[global_warp_id] += local_count_col;
-//         }
-//         block_idx += gridDim.x;
-//     }
-// }
+            if (rs >= re) continue;
+            //计算时间范围
+            T left  = lower_bound(col_ts, rs, re, t_begin);
+            T right = upper_bound(col_ts, left, re, t_end);
+            if (left >= right) continue;
+            if(lane == 0)
+                counts_nodes_buffer[global_warp_id] += 1;
+            if(use_full_timestamps){
+                if(lane == 0)   
+                    counts_ts_buffer[global_warp_id] += t_end - t_begin;
+            }
+            else{
+                int local_count_ts = 0;
+                for(T e = left + lane; e < right; e +=32){
+                    if(e > left && col_ts[e] != col_ts[e-1]){
+                        local_count_ts++;
+                    }
+                }
+                warp_reduce_sum(local_count_ts);
+                if(lane == 0){
+                    counts_ts_buffer[global_warp_id] += local_count_ts;
+                }
+            }
+            int local_count_col = 0;
+            for(T e = left + lane; e < right; e += 32) {
+                if (e >= right) break;
+                T dst_c = col_chunk[e];
+                if (dst_c < num_nodes && chunk_exists[dst_c]) {
+                    local_count_col++;
+                }
+            }
+            warp_reduce_sum(local_count_col);
+            if(lane == 0)
+                counts_col_buffer[global_warp_id] += local_count_col;
+        }
+        block_idx += gridDim.x;
+    }
+}
 
 
-// // ======================
-// // 4. 阶段 2：写入数据
-// // ======================
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void write_edges_kernel(
-//     const T* __restrict__ chunk_ptr,
-//     const T* __restrict__ row_ptr,
-//     const T* __restrict__ row_idx,
-//     const T* __restrict__ col_idx,
-//     const T* __restrict__ col_eid,
-//     const TS* __restrict__ col_ts,
-//     const T* __restrict__ col_chunk,
-//     const T* __restrict__ chunks,
-//     const bool* __restrict__ chunk_exists,
-//     T* __restrict__ out_row_ptr,
-//     T* __restrict__ out_row_idx,
-//     T* __restrict__ out_row_ts,
-//     T* __restrict__ out_ts_ptr,
-//     T* __restrict__ out_col_idx,
-//     TS* __restrict__ out_col_ts,
-//     T * __restrict__ out_col_eid,
-//     int num_chunks,
-//     T num_nodes,
-//     TS t_begin,
-//     TS t_end,
-//     T* __restrict__ counts_nodes_buffer,
-//     T* __restrict__ counts_ts_buffer,
-//     T* __restrict__ counts_col_buffer,
-//     bool use_full_timestamps
-// ) {
-//     int block_idx = blockIdx.x;
-//     int global_warp_id = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
-//     while(block_idx < num_chunks){
-//         T chunk = chunks[block_idx];
-//         T chunk_start = chunk_ptr[block_idx];
-//         T chunk_end = chunk_ptr[block_idx + 1];
-//         if(chunk_start >= chunk_end){
-//             block_idx += gridDim.x;
-//             continue;
-//         }
-//         int warp_id = threadIdx.x / 32;
-//         int warps_per_block = blockDim.x / 32;
-//         int lane = threadIdx.x % 32;
-//         int local_nodes_count = 0;
-//         for(T row_x = chunk_start + warp_id; row_x < chunk_end ; row_x += warps_per_block){
-//             T node_idx = row_idx[row_x];
-//             if(node_idx >= num_nodes) break;
+// ======================
+// 4. 阶段 2：写入数据
+// ======================
+template <typename T = int64_t, typename TS = int64_t>
+__global__ void write_edges_kernel(
+    const T* __restrict__ chunk_ptr,
+    const T* __restrict__ row_ptr,
+    const T* __restrict__ row_idx,
+    const T* __restrict__ col_idx,
+    const T* __restrict__ col_eid,
+    const TS* __restrict__ col_ts,
+    const T* __restrict__ col_chunk,
+    const T* __restrict__ chunks,
+    const bool* __restrict__ chunk_exists,
+    T* __restrict__ out_row_ptr,
+    T* __restrict__ out_row_idx,
+    T* __restrict__ out_row_ts,
+    T* __restrict__ out_ts_ptr,
+    T* __restrict__ out_col_idx,
+    TS* __restrict__ out_col_ts,
+    T * __restrict__ out_col_eid,
+    int num_chunks,
+    T num_nodes,
+    TS t_begin,
+    TS t_end,
+    T* __restrict__ counts_nodes_buffer,
+    T* __restrict__ counts_ts_buffer,
+    T* __restrict__ counts_col_buffer,
+    bool use_full_timestamps
+) {
+    int block_idx = blockIdx.x;
+    int global_warp_id = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    while(block_idx < num_chunks){
+        T chunk = chunks[block_idx];
+        T chunk_start = chunk_ptr[block_idx];
+        T chunk_end = chunk_ptr[block_idx + 1];
+        if(chunk_start >= chunk_end){
+            block_idx += gridDim.x;
+            continue;
+        }
+        int warp_id = threadIdx.x / 32;
+        int warps_per_block = blockDim.x / 32;
+        int lane = threadIdx.x % 32;
+        int local_nodes_count = 0;
+        for(T row_x = chunk_start + warp_id; row_x < chunk_end ; row_x += warps_per_block){
+            T node_idx = row_idx[row_x];
+            if(node_idx >= num_nodes) break;
 
-//             T row = node_idx;
-//             T rs = row_ptr[node_idx];
-//             T re = row_ptr[node_idx + 1];
+            T row = node_idx;
+            T rs = row_ptr[node_idx];
+            T re = row_ptr[node_idx + 1];
             
-//             if(rs >= re) continue;
+            if(rs >= re) continue;
 
-//             if (rs >= re) continue;
-//             //计算时间范围
-//             T left  = lower_bound(col_ts, rs, re, t_begin);
-//             T right = upper_bound(col_ts, left, re, t_end);
-//             if (left >= right) continue;
-//             if(lane == 0){
-//                 //更新结束位置的ptr
-//                 out_row_ptr[local_nodes_count + counts_nodes_buffer[global_warp_id] + 1]= \
-//                     counts_ts_buffer[global_warp_id];
-//                 out_row_idx[local_nodes_count + counts_nodes_buffer[global_warp_id]]= row;
-//                 local_nodes_count++;
-//             }
-//             int offset_col_ = 0;
-//             int offset_ts_ = 0;
-//             if(use_full_timestamps){
-//                 for(T e = t_begin; e < t_end ; e ++) {
-//                    out_row_ts[counts_ts_buffer[global_warp_id] + e - t_begin] = e;
-//                 }
-//                 for(T e = left + lane; e < ((right + 31)/32 + 1) * 32; e +=32){
-//                     bool active = e < right;
-//                     bool dst_in_chunk = active ? chunk_exists[col_chunk[e]] : 0;
-//                     bool new_timestamp = active ? (e==left || col_ts[e] != col_ts[e-1]) : 0;
-//                     int offset_col_p = dst_in_chunk ? warpExclusiveScan(1): warpExclusiveScan(0);
-//                     int offset_ts_p = new_timestamp ? warpExclusiveScan(1) : warpExclusiveScan(0);
-//                     int incre_col = warp_broadcast(offset_col_p, 31);
-//                     int incre_ts = warp_broadcast(offset_ts_p, 31);
-//                     T dst_c = col_chunk[e];
-//                     if(new_timestamp){
-//                         int offset_ts = offset_ts_ + offset_ts_p;
-//                         int offset_col = offset_col + offset_col_p;
-//                         for(int i = col_ts[e-1] + 1; e > left && i < col_ts[e]; i++){
-//                             out_ts_ptr[counts_ts_buffer[global_warp_id] + i - t_begin] = offset_col + counts_col_buffer[global_warp_id];
-//                         }
-//                         offset_ts_ += incre_ts;
-//                     }
-//                     if(dst_in_chunk){
-//                             //out_ts_ptr[counts_ts_buffer[global_warp_id] + col_ts[e] - t_begin]++;
-//                         int offset_col = offset_col_ + offset_col_p;
-//                         out_col_idx[counts_col_buffer[global_warp_id] + offset_col] = col_idx[e];
-//                         out_col_ts[counts_col_buffer[global_warp_id] + offset_col] = col_ts[e];
-//                         out_col_eid[counts_col_buffer[global_warp_id] + offset_col] = col_eid[e];
-//                         offset_col_ += incre_col;
-//                     }
-//                 }
-//             }
-//             else{
-//                 for(T e = left + lane; e < ((right + 31)/32 + 1) * 32; e +=32){
-//                     bool active = e < right;
-//                     bool dst_in_chunk = active ? chunk_exists[col_chunk[e]] : 0;
-//                     bool new_timestamp = active ? (e==left || col_ts[e] != col_ts[e-1]) : 0;
-//                     int offset_col_p = dst_in_chunk ? warpInclusiveScan(1): warpInclusiveScan(0);
-//                     int offset_ts_p = new_timestamp ? warpInclusiveScan(1) : warpInclusiveScan(0);
-//                     int incre_col = warp_broadcast(offset_col_p, 31);
-//                     int incre_ts = warp_broadcast(offset_ts_p, 31);
-//                     T dst_c = col_chunk[e];
-//                     int offset_col = offset_col_ + offset_col_p - dst_in_chunk;
-//                     if(new_timestamp){
-//                         int offset_ts = offset_ts_ + offset_ts_p - new_timestamp;
-//                         out_ts_ptr[counts_ts_buffer[global_warp_id] + offset_ts] = offset_col + counts_col_buffer[global_warp_id];
-//                         out_row_ts[counts_ts_buffer[global_warp_id] + offset_ts] = col_ts[e];
-//                         offset_ts_ += incre_ts;
-//                     }
-//                     if(dst_in_chunk){
-//                             //out_ts_ptr[counts_ts_buffer[global_warp_id] + col_ts[e] - t_begin]++;
-//                         out_col_idx[counts_col_buffer[global_warp_id] + offset_col] = col_idx[e];
-//                         out_col_ts[counts_col_buffer[global_warp_id] + offset_col] = col_ts[e];
-//                         out_col_eid[counts_col_buffer[global_warp_id] + offset_col] = col_eid[e];
-//                         offset_col_ += incre_col;
-//                     }
-//                 }
-//             }
-//         }
-//         block_idx += gridDim.x;
-//     }
+            if (rs >= re) continue;
+            //计算时间范围
+            T left  = lower_bound(col_ts, rs, re, t_begin);
+            T right = upper_bound(col_ts, left, re, t_end);
+            if (left >= right) continue;
+            if(lane == 0){
+                //更新结束位置的ptr
+                out_row_ptr[local_nodes_count + counts_nodes_buffer[global_warp_id] + 1]= \
+                    counts_ts_buffer[global_warp_id];
+                out_row_idx[local_nodes_count + counts_nodes_buffer[global_warp_id]]= row;
+                local_nodes_count++;
+            }
+            int offset_col_ = 0;
+            int offset_ts_ = 0;
+            if(use_full_timestamps){
+                for(T e = t_begin; e < t_end ; e ++) {
+                   out_row_ts[counts_ts_buffer[global_warp_id] + e - t_begin] = e;
+                }
+                for(T e = left + lane; e < ((right + 31)/32 + 1) * 32; e +=32){
+                    bool active = e < right;
+                    bool dst_in_chunk = active ? chunk_exists[col_chunk[e]] : 0;
+                    bool new_timestamp = active ? (e==left || col_ts[e] != col_ts[e-1]) : 0;
+                    int offset_col_p = dst_in_chunk ? warpExclusiveScan(1): warpExclusiveScan(0);
+                    int offset_ts_p = new_timestamp ? warpExclusiveScan(1) : warpExclusiveScan(0);
+                    int incre_col = warp_broadcast(offset_col_p, 31);
+                    int incre_ts = warp_broadcast(offset_ts_p, 31);
+                    T dst_c = col_chunk[e];
+                    if(new_timestamp){
+                        int offset_ts = offset_ts_ + offset_ts_p;
+                        int offset_col = offset_col + offset_col_p;
+                        for(int i = col_ts[e-1] + 1; e > left && i < col_ts[e]; i++){
+                            out_ts_ptr[counts_ts_buffer[global_warp_id] + i - t_begin] = offset_col + counts_col_buffer[global_warp_id];
+                        }
+                        offset_ts_ += incre_ts;
+                    }
+                    if(dst_in_chunk){
+                            //out_ts_ptr[counts_ts_buffer[global_warp_id] + col_ts[e] - t_begin]++;
+                        int offset_col = offset_col_ + offset_col_p;
+                        out_col_idx[counts_col_buffer[global_warp_id] + offset_col] = col_idx[e];
+                        out_col_ts[counts_col_buffer[global_warp_id] + offset_col] = col_ts[e];
+                        out_col_eid[counts_col_buffer[global_warp_id] + offset_col] = col_eid[e];
+                        offset_col_ += incre_col;
+                    }
+                }
+            }
+            else{
+                for(T e = left + lane; e < ((right + 31)/32 + 1) * 32; e +=32){
+                    bool active = e < right;
+                    bool dst_in_chunk = active ? chunk_exists[col_chunk[e]] : 0;
+                    bool new_timestamp = active ? (e==left || col_ts[e] != col_ts[e-1]) : 0;
+                    int offset_col_p = dst_in_chunk ? warpInclusiveScan(1): warpInclusiveScan(0);
+                    int offset_ts_p = new_timestamp ? warpInclusiveScan(1) : warpInclusiveScan(0);
+                    int incre_col = warp_broadcast(offset_col_p, 31);
+                    int incre_ts = warp_broadcast(offset_ts_p, 31);
+                    T dst_c = col_chunk[e];
+                    int offset_col = offset_col_ + offset_col_p - dst_in_chunk;
+                    if(new_timestamp){
+                        int offset_ts = offset_ts_ + offset_ts_p - new_timestamp;
+                        out_ts_ptr[counts_ts_buffer[global_warp_id] + offset_ts] = offset_col + counts_col_buffer[global_warp_id];
+                        out_row_ts[counts_ts_buffer[global_warp_id] + offset_ts] = col_ts[e];
+                        offset_ts_ += incre_ts;
+                    }
+                    if(dst_in_chunk){
+                            //out_ts_ptr[counts_ts_buffer[global_warp_id] + col_ts[e] - t_begin]++;
+                        out_col_idx[counts_col_buffer[global_warp_id] + offset_col] = col_idx[e];
+                        out_col_ts[counts_col_buffer[global_warp_id] + offset_col] = col_ts[e];
+                        out_col_eid[counts_col_buffer[global_warp_id] + offset_col] = col_eid[e];
+                        offset_col_ += incre_col;
+                    }
+                }
+            }
+        }
+        block_idx += gridDim.x;
+    }
  
-// }
+}
 
 __global__ void filter_seeds_kernel(
     const T* chunk_ptr, const T* row_ptr, const T* row_idx, const T* col_idx, const TS* col_ts,
@@ -599,10 +602,11 @@ __global__ void collect_seeds_kernel(
         if(chunk_start >= chunk_end){
             block_idx += gridDim.x;
             continue;
+        }
         extern __shared__ int shared_counts[];
-        T* s_node_count = shared_counts;
-        T* s_ts_count   = shared_counts + warps_per_block;
-        T* s_eid_count  = shared_counts + warps_per_block * 2;
+        int* counts_nodes = shared_counts;
+        int* counts_ts   = shared_counts + warps_per_block;
+        int* counts_eid  = shared_counts + warps_per_block * 2;
         for(T row_x = chunk_start + warp_id; row_x < chunk_end ; row_x += warps_per_block){
             //计算所属的前缀数组的下标
             int prefix_threads = (row_x - chunk_start) % blockDim.x;
@@ -615,7 +619,7 @@ __global__ void collect_seeds_kernel(
             T left  = lower_bound(col_ts, rs, re, t_begin);
             T right = upper_bound(col_ts, left, re, t_end);
             if (left >= right) continue;
-            int thread_offset;
+            int thread_offset = prefix_threads;
             T row_pos = counts_nodes_buffer[prefix_threads] + counts_nodes[thread_offset];
             T ts_pos = counts_ts_buffer[prefix_threads] + counts_ts[thread_offset];
             T eid_pos = counts_col_buffer[prefix_threads] + counts_eid[thread_offset];
@@ -623,23 +627,22 @@ __global__ void collect_seeds_kernel(
                 out_nodes_ptr[row_pos + 1] = ts_pos;
                 out_nodes[row_pos] = row;
             }
-            counts_node[thread_offset]++;
-            out_nodes[]
+            counts_nodes[thread_offset]++;
             if(using_full_timestamp){
                 //写入所有时间戳的边
-                for(T e = t_start; e < t_end; e += 32){
-                    out_ts[ts_pos + e - t_start] = e;
+                for(T e = t_begin; e < t_end; e += 32){
+                    out_ts[ts_pos + e - t_begin] = e;
                 }
                 for(T e = left + lane; e < right; e +=32){
                     if(e == left || col_ts[e] != col_ts[e-1]){
                         for(int i = col_ts[e-1] + 1; i < col_ts[e]; i++){
-                            out_ts_ptr[ts_pos + i - t_start] = eid_pos + e - left;
+                            out_ts_ptr[ts_pos + i - t_begin] = eid_pos + e - left;
                         }
                     }
                     out_eid[eid_pos + e - left] = col_eid[e];
                 }
-                out_ts_ptr[ts_pos + t_end - t_start] = eid_pos + right - left;
-                counts_ts[thread_offset] += t_end - t_start;
+                out_ts_ptr[ts_pos + t_end - t_begin] = eid_pos + right - left;
+                counts_ts[thread_offset] += t_end - t_begin;
                 counts_eid[thread_offset] += right - left;
                 
             }
@@ -660,7 +663,6 @@ __global__ void collect_seeds_kernel(
         }
         block_idx += gridDim.x;
     }
-    
 }
 // // 第336行 bloom_set 完整实现
 // __device__ void bloom_set(unsigned char* b, T x) {
@@ -787,85 +789,6 @@ __global__ void uniform_sample_single_hop_kernel(
     }
 }
 
-// // ------------------------------------------------------------------
-// // 3. 内核前置声明
-// // ------------------------------------------------------------------
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void build_graph_kernel(
-//     const Edge<T, TS>* edges, T* row_ptr, T* col_idx, TS* col_ts,
-//     T* col_chunk, T* edge_id, T* src_idx, T* chunk_ptr,
-//     const T* row_chunk_mapper, T n, T m, T chunk_size);
-
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void mark_chunks_exists_kernel(const T* chunks, T n, bool* exists, T size);
-
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void count_edges_kernel(
-//     const T* chunk_ptr, const T* row_ptr, const T* row_idx, const TS* col_ts,
-//     const T* col_chunk, const T* chunks, bool* chunk_exists, 
-//     T num_chunks, T num_nodes, TS t_begin, TS t_end,
-//     T* warp_counts_buffer, T* counts_buffer, T* chunk_nodes_counts_buffer
-// );
-
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void write_edges_kernel(
-//     const T*  chunk_ptr, 
-//     const T* row_ptr,
-//     const T* row_idx,
-//     const T* col_idx,
-//     const T* col_eid,
-//     const TS* col_ts,
-//     const T* col_chunk,
-//     const T* chunks,
-//     const bool* chunk_exists, 
-//     T* out_row_ptr, 
-//     T* out_row_idx, 
-//     T* out_col_idx, 
-//     TS* out_col_ts, T * out_col_eid, T num_chunks, T num_nodes,TS t_begin,TS t_end,
-//     const T*  chunk_counts_buffer,
-//     const T*  counts_buffer,
-//     const T*  chunk_nodes_counts_buffer
-// );
-
-
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void filter_seeds_kernel(
-//     const T* chunk_ptr, const T* row_ptr, const T* row_idx,
-//     const T* col_idx, const TS* col_ts,
-//     const T* chunks, T num_chunks,
-//     TS t_begin, TS t_end,
-//     T* out_counts,
-//     T* chunk_counts_buffer);
-
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void collect_seeds_kernel(
-//     const T* prefix,
-//     const T* chunk_ptr, const T* chunks, const T* row_ptr, const T* row_idx,
-//     const T* col_idx, const TS* col_ts, const T* col_eid,
-//     T* out_nodes, TS* out_ts, T* out_eid,
-//     T num_chunks, T total,
-//     T neg_size,
-//     const T* neg_seeds,
-//     const T* chunk_counts_prefix,
-//     TS t_begin, TS t_end
-// );
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void static_neighbor_num(
-//     const T* nodes, const TS* node_ts, T num_nodes, int k,
-//     const T* row_ptr, const T* col_idx, const TS* col_ts, const T* col_chunk, T* out_cnt, const bool* chunk_exists
-// );
-// template <typename T = int64_t, typename TS = int64_t>
-// __global__ void sample_single_hop_kernel(
-//     const T* in_nodes, const TS* in_ts,
-//     //const T* in_nodes, const TS* in_ts,
-//     T n, int k,
-//     const T* row_ptr, const T* col_idx, const TS* col_ts,
-//     const T* col_eid, const T* col_chunk,
-//     TS time_begin, TS time_end,
-//     T* out_row_ptr, T* out_nbr, TS* out_nbr_ts, T* out_nbr_eid,
-//     const bool* chunk_exists
-// );
-
 
 
 // ------------------------------------------------------------------
@@ -975,206 +898,25 @@ class TemporalResult{
         neighbors_list.push_back(std::move(n));
     }
 };
-template <typename T = int64_t, typename TS = int64_t>
-class TemporalBlock {
 
-    public:
-    thrust::device_vector<T>  neighbors;
-    thrust::device_vector<TS> neighbors_ts;
-    thrust::device_vector<T>  neighbors_eid;
 
-    thrust::device_vector<T>  row_ptr;
-    thrust::device_vector<T>  row_idx;
-    thrust::device_vector<T> row_ts;
-    T row_node_size;
-    int layer = 0;
-    thrust::device_vector<T> eid_mapper;
-    thrust::device_vector<T> nid_mapper;
-
-    thrust::device_vector<T> layer_ptr;
-    thrust::device_vector<T> seed_eid;
-    
-    thrust::device_vector<T> row_ptr_to_ts;
-    thrust::device_vector<T> unique_ts;
-    thrust::device_vector<T> row_ts_ptr;
-
-    TemporalBlock() = default;
-    TemporalBlock(thrust::device_vector<T>&& nbr,
-                  thrust::device_vector<TS>&& nbr_ts,
-                  thrust::device_vector<T> && nbr_eid,
-                  thrust::device_vector<T>&& rp)
-        : neighbors(std::move(nbr)), 
-        neighbors_ts(std::move(nbr_ts)), 
-        neighbors_eid(std::move(nbr_eid)), 
-        row_ptr(std::move(rp)){}
-
-    TemporalBlock(
-                 thrust::device_vector<T>&& nbr,
-                  thrust::device_vector<TS>&& nbr_ts,
-                  thrust::device_vector<T> && nbr_eid,
-                  thrust::device_vector<T> && rp,
-                  thrust::device_vector<T> && rdx,
-                  int layer_)
-        : neighbors(std::move(nbr)), 
-        neighbors_ts(std::move(nbr_ts)), 
-        neighbors_eid(std::move(nbr_eid)), 
-        row_ptr(std::move(rp)),
-        row_idx(std::move(rdx)),layer(layer_){}
-
-    TemporalBlock(thrust::device_vector<T>&& nbr,
-                  thrust::device_vector<TS>&& nbr_ts,
-                  thrust::device_vector<T> && nbr_eid,
-                  thrust::device_vector<T>&& rp,
-                  thrust::device_vector<T>&& lp)
-        : neighbors(std::move(nbr)), 
-        neighbors_ts(std::move(nbr_ts)), 
-        neighbors_eid(std::move(nbr_eid)), 
-        layer_ptr(std::move(lp)),
-        row_ptr(std::move(rp)){}
-    
-
-    // void duplicate_same_time(){
-    //     size_t n = row_idx.size();
-    //     if (n == 0) return;
-    //     // Step 1: 构造键值对
-    //     thrust::device_vector<KeyValue> kv(n);
-    //     thrust::transform(
-    //         thrust::make_zip_iterator(thrust::make_tuple(row_idx.begin(), row_ts.begin())),
-    //         thrust::make_zip_iterator(thrust::make_tuple(row_idx.end(),   row_ts.end())),
-    //         kv.begin(),
-    //         [] __host__ __device__ (const thrust::tuple<T, TS>& t) {
-    //             return KeyValue(thrust::get<0>(t), thrust::get<1>(t));
-    //         }
-    //     );
-    //     // Step 3: 去重 + 标记变化
-    //     thrust::device_vector<int> flags(n, 0);
-    //     auto kv_iter = thrust::make_zip_iterator(thrust::make_tuple(kv.begin(), kv.begin() + 1));
-    //     thrust::transform(
-    //         kv_iter, kv_iter + (n - 1),
-    //         flags.begin() + 1,
-    //         [] __host__ __device__ (const thrust::tuple<KeyValue, KeyValue>& pair) {
-    //             return EqualKeyValue()(thrust::get<0>(pair), thrust::get<1>(pair)) ? 0 : 1;
-    //         }
-    //     );
-    //     thrust::device_vector<T> ptr = thrust::sequence(0, n + 1);
-    //     unique_ts.resize(n);
-    //     flags[0] = 1;  // 第一个元素总是新组
-    //     auto end = thrust::copy_if(
-    //         row_ts.begin(), row_ts.end(), flags, unique_ts
-    //     );
-    //     unique_ts.resize(end - unique_ts.begin());
-    //     size_t unique_ts_count = unique_ts.size();
-
-    //     row_ts_ptr.resize(unique_ts_count + 1);
-    //     thrust::copy_if(
-    //         ptr.begin(), ptr.end(), flags, row_ts_ptr.begin()
-    //     );
-    //     row_ts_ptr[unique_ts_count] = n;
-
-    //     row_ts_ptr.resize(n + 1);
-
-    //     row
-
-    //     thrust::transform(
-    //         thrust::make_zip_iterator(thrust::make_tuple(row_ts.begin(), flags.begin())),
-    //         thrust::make_zip_iterator(thrust::make_tuple(row_ts.end(),   flags.end())),
-    //         row_ts_ptr.begin(),
-    //         [] __host__ __device__ (const thrust::tuple<TS, int>& t) {
-    //             return thrust::get<1>(t);
-    //         }
-    //     );
-    //     size_t unique_count = unique_ts.size();
-    //     ts_start.resize(unique_count);
-    //     ts_end.resize(unique_count);
-    //     end = thrust::copy_if(
-    //         ptr.begin(), ptr.end(), flags, row_ptr_to_ts
-    //     );
-    //     row_ptr_to_ts[]
-    //     // 扫描 flags，得到每个 row_idx 的起始位置
-    //     thrust::device_vector<T> group_start(n + 1);
-    //     group_start[0] = 0;
-    //     thrust::inclusive_scan(flags.begin(), flags.end(), group_start.begin() + 1);
-
-    //     // 统计每个组的大小
-    //     size_t num_groups = group_start[n];
-    //     unique_counts.resize(num_groups);
-
-    //     // 计算每组长度：group_start[i+1] - group_start[i]
-    //     thrust::transform(
-    //         group_start.begin(), group_start.begin() + num_groups,
-    //         group_start.begin() + 1,
-    //         unique_counts.begin(),
-    //         [] __host__ __device__ (T a, T b) { return b - a; }
-    //     );
-    // }
-    //TODO：implement unique1
-    // TemporalBlock(thrust::device_vector<T> & row,
-    //                 thrust::device_vector<T> & col,
-    //                 thrust::device_vector<TS> & ts,
-    //                 thrust::device_vector<TS> & eid,
-    //                 thrust::device_vector<T> &layer_ptr)
-    // {
-    //     neighbors = std::move(col);
-    //     neighbors_ts = std::move(ts);
-    //     neighbors_eid = std::move(eid);
-    //     //nid_mapper = thrust::device_vector<T>(col.size());
-    //     for (T i = 0; i < layer_ptr.size(); i++) {
-    //         T start = layer_ptr[i];
-    //         T end = layer_ptr[i + 1];
-    //         auto end = thrust::reduce_by_key(
-    //             row.begin(), row.end(),
-    //             thrust::make_constant_iterator(1), // 每个元素的初始计数为 1
-    //             nid_mapper.begin(), // 输出去重后的元素
-    //         thrust::make_counting_iterator(0)） // 输出的计数器
-    //     )
-        
-    //     T row_node_size = end - nid_mapper.begin();  
-    //     nip_mapper.resize(row_node_size + col.size());
-    //     thrust::copy(col.begin(), col.end(), nid_mapper.begin() + row_node_size);
-        //nid_mapper.resize(unique_node_size);
-    //}
-    const thrust::device_vector<T>&  get_neighbors()    const { return neighbors; }
-    const thrust::device_vector<TS>& get_neighbors_ts() const { return neighbors_ts; }
-    const thrust::device_vector<T>&  get_row_ptr()      const { return row_ptr; }
-    const thrust::device_vector<T>&  get_neighbors_eid()     const { return neighbors_eid; }
-};
-
-template <typename T = int64_t, typename TS = int64_t>
-class AsyncQueueRes{
-    public:
-    queue<torch::Tensor> insert_idx;
-    queue<TemporalResult> res_list;
-    queue<bool> follow;
-    void top_and_pop(){
-        bool op = follow.front();
-        follow.pop();
-        if(op){
-            TemporalResult = res_list.top();
-            res_list.pop();
-        }
-        else{
-
-        }
-    }
-    void insert(){
-
-    }
-    private:
-    torch::Tensor clear_mapper;
-    void clear_id_mapper(){
-
-    }
-    void get_unique_id_mapper(){
-
-    }
+__device__ int is_diff_prefix(Edge_T a, Edge_T b) {
+    return (a.src != b.src || a.ts != b.ts) ? 1 : 0;
 }
+thrust::device_vector<T> concat(thrust::device_vector<T> &A, thrust::device_vector<T> &B){
+    thrust::device_vector<T> C(A.size() + B.size());
+    thrust::copy(A.begin(), A.end(), C.begin());
+    thrust::copy(B.begin(), B.end(), C.begin() + A.size());
 
+    return std::move(C);
+}
 template <typename T = int64_t, typename TS = int64_t>
 class Graph {
-    thrust::device_vector<T> slice_ptr;
+   // thrust::device_vector<T> slice_ptr_;
     thrust::device_vector<T>  chunk_ptr_, row_ptr_, row_idx_, col_idx_, col_chunk_, edge_id_, src_idx_;
     thrust::device_vector<TS> col_ts_;
     T  num_nodes_, num_edges_, chunk_size_;
+   // T slice_size_;
     cudaStream_t stream_;
     thrust::device_vector<T> counts_buffer;
     thrust::device_vector<T> chunk_counts_buffer;
@@ -1186,12 +928,17 @@ class Graph {
 
     thrust::device_vector<T> prefix_different_timestamp;
     public:
-    Graph(T n, T chunk_size, 
+    cudaStream_t get_stream(){
+        return stream_;
+    }
+    T get_num_nodes(){
+        return num_nodes_;
+    }
+    Graph(T n, T chunk_size, //T slice_size,
         const torch::Tensor& src, 
         const torch::Tensor& dst,
         const torch::Tensor& ts, 
         const torch::Tensor& row_chunk_mapper,
-        const torch::Tensor & edge_slice,
         uint64_t py_stream)
         : num_nodes_(n), chunk_size_(chunk_size)
     {
@@ -1276,6 +1023,8 @@ class Graph {
                 cudaMemcpyHostToDevice,
                 stream_);
             cudaStreamSynchronize(stream_);  // 确保拷贝完成！
+
+            thrust::sort(thrust::cuda::par.on(stream_), d_edges.begin(), d_edges.end(), edge_cmp<T,TS>);
             //printf("Edges copied to device and sorted.\n");
             // ==============================================================
             // 7. 初始化 CSR 结构
@@ -1288,13 +1037,13 @@ class Graph {
             edge_id_.resize(m);
             src_idx_.resize(m);
             chunk_ptr_.resize(chunk_size_ + 1, 0);
+            
             //printf("CSR structures initialized.  %d \n", col_idx_.size());
             // ==============================================================
             // 8. 启动 Kernel
             // ==============================================================
             dim3 block(10), grid( 10);
-            //dim3 block(256), grid((m + 255) / 256);
-            //printf("%d chunk_size\n", chunk_size_);
+            printf("%d chunk_size\n", chunk_size_);
             build_graph_kernel<<<grid, block, 0, stream_>>>(
                 thrust::raw_pointer_cast(d_edges.data()),
                 thrust::raw_pointer_cast(row_ptr_.data()),
@@ -1344,14 +1093,15 @@ class Graph {
             thrust::transform(d_edges.begin(),d_edges.end()-1,
                               d_edges.begin()+1,
                                prefix_different_timestamp.begin()+1,
-                              [] __host__ __device__ (Edge_T a, Edge_T b) {
-                                  return (a.src != b.src || a.ts != b.ts) ? 1 : 0;
-                              });
+                               is_diff_prefix
+                              );
             prefix_different_timestamp[0] = 1;
-            thrust::inclusive_scan(thrust::cuda::par.on(stream_),
+            thrust::inclusive_scan(
+                                    thrust::cuda::par.on(stream_),
                                    prefix_different_timestamp.begin(),
                                    prefix_different_timestamp.end(),
-                                   prefix_different_timestamp.begin());
+                                   prefix_different_timestamp.begin()
+                            );
             // ==============================================================
             // 11. 初始化计数缓冲
             // ==============================================================
@@ -1483,9 +1233,10 @@ class Graph {
             std::move(out_col_eid)
         );
         TemporalResult<T, TS> block_result(
-            std::move(block_root),
-            std::vector<TemporalNeighbor<T, TS>>{std::move(block_nbr)}
+            std::move(block_root)//,
+            //std::vector<TemporalNeighbor<T, TS>>{std::move(block_nbr)}
         );
+        block_result.append(std::move(block_nbr));
         return std::move(block_result);
     }
     TemporalRoot<T,TS> get_seeds_in_chunks(const thrust::device_vector<T>& chunks,
@@ -1580,13 +1331,7 @@ class Graph {
     NegativeRoot<T,TS> get_negative_root(thrust::device_vector<T> &negative_root, thrust::device_vector<TS> &negative_time){
         return NegativeRoot<T,TS>(std::move(negative_root),std::move(negative_time));
     }
-    thrust::device_vector<T> concat(thrust::device_vector<T> &A, thrust::device_vector<T> &B){
-        thrust::device_vector<T> C(A.size() + B.size());
-        thrust::copy(A.begin(), A.end(), C.begin());
-        thrust::copy(B.begin(), B.end(), C.begin() + A.size());
 
-        return std::move(C);
-    }
     TemporalResult<T,TS> sample_src_in_chunks_khop(
             TemporalRoot<T,TS> seeds_root, NegativeRoot<T,TS> neg_root, int k, int layers, TS allowed_offset, bool equal_root_time, bool keep_root_time, std::string type)
     {
@@ -1747,6 +1492,294 @@ class Graph {
     }
 };
 
+static __global__ void mark_new_ids_kernel(
+    const T* global_ids,
+    T* local_ids,
+    const T* global_to_local,
+    const T* global_mask,
+    int num_ids, T mask_flag
+){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= num_ids) return;
+    T gid = global_ids[i];
+    if(global_mask[gid] == mask_flag){
+        local_ids[gid] = global_to_local[gid];
+    }
+    else{
+        local_ids[gid] = -1;
+    }
+}
+static __global__ void update_new_ids_kernel(
+    const T* global_ids,
+    T* local_ids,
+    const T* global_to_local,
+    T* global_mask,
+    int num_ids, T mask_flag
+){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= num_ids) return;
+    T gid = global_ids[i];
+    if(local_ids[gid] == -1){
+        local_ids[gid] = global_to_local[gid];
+        global_mask[gid] = mask_flag;
+    }
+}
+template <typename T = int64_t, typename TS = int64_t>
+class Remapper{
+    public:
+    thrust::device_vector<T> id_mapper;
+    long long times_flag = 1;
+    thrust::device_vector<T> global_mask;
+    int id_counts;
+    void initlization(int num_nodes){
+        global_mask.resize(num_nodes,0);
+    }
+   
+    thrust::device_vector<T> remapper(thrust::device_vector<T> ids, 
+                                            thrust::device_vector<T> & insert_ids,
+                                            thrust::device_vector<T> & insert_local_ids,
+                                            cudaStream_t stream_){
+        int num_ids = ids.size();
+        thrust::device_vector<T> local_ids(num_ids,0);
+        int warps = 4, threads = warps * 32;
+        int blocks = (num_ids + warps - 1) / warps;
+        mark_new_ids_kernel<<<blocks,threads, 0, stream_>>>(
+            thrust::raw_pointer_cast(ids.data()),
+            thrust::raw_pointer_cast(local_ids.data()),
+            thrust::raw_pointer_cast(id_mapper.data()),
+            thrust::raw_pointer_cast(global_mask.data()),
+            num_ids, id_counts
+        );
+        thrust::device_vector<T> new_global_ids(num_ids);
+        auto end = thrust::copy_if(
+            thrust::cuda::par.on(stream_),
+            ids.begin(), ids.end(),
+            local_ids.begin(),
+            new_global_ids.begin(),
+            [] __device__ (int flag) { return flag == -1; }
+        );
+        thrust::sort(thrust::cuda::par.on(stream_), new_global_ids.begin(), end);
+        end = thrust::unique(thrust::cuda::par.on(stream_), new_global_ids.begin(), end);
+        int new_id_count = thrust::distance(new_global_ids.begin(), end);
+        insert_ids.resize(new_id_count,0);
+        insert_local_ids.resize(new_id_count,0);
+        thrust::sequence(thrust::cuda::par.on(stream_), insert_local_ids.begin(), insert_local_ids.end(), id_counts);
+        id_counts += new_id_count;
+        thrust::copy(
+            new_global_ids.begin(), end,
+            insert_ids.begin()
+        );
+        thrust::scatter(
+            thrust::cuda::par.on(stream_),
+            insert_local_ids.begin(), insert_local_ids.end(),
+            insert_ids.begin(),
+            id_mapper.begin()
+        );
+        // 更新 global_mask 和 id_mapper
+        update_new_ids_kernel<<<(new_id_count + 255)/256, 256, 0, stream_>>>(
+            thrust::raw_pointer_cast(ids.data()),
+            thrust::raw_pointer_cast(local_ids.data()),
+            thrust::raw_pointer_cast(id_mapper.data()),
+            thrust::raw_pointer_cast(global_mask.data()),
+            num_ids, id_counts);
+        return std::move(local_ids);
+    }
+    void insert(TemporalResult<T,TS> &result, bool reset, cudaStream_t stream_){
+        if(reset){
+            times_flag += 1;
+        }
+        thrust::device_vector<T>  insert_ids;
+        thrust::device_vector<T>  insert_local_ids;
+        result.roots.roots = remapper(
+            result.roots.roots, insert_ids, insert_local_ids, stream_
+        );
+
+        // 重映射每一层的 neighbors
+        for (auto& layer : result.neighbors_list) {
+            thrust::device_vector<T>  layer_insert_ids;
+            thrust::device_vector<T>  layer_insert_local_ids;
+            layer.neighbors = std::move(remapper(
+                layer.neighbors, layer_insert_ids, layer_insert_local_ids, stream_
+            ));
+            insert_ids = concat(insert_ids, layer_insert_ids);
+            insert_local_ids = concat(insert_local_ids, layer_insert_local_ids);
+        }
+        result.nodes_remapper_id = std::move(insert_ids);
+    }
+
+};
+
+template<typename T, typename TS>
+class AsyncTemporalSampler {
+    private:
+    struct Task {
+        TS time_start;
+        TS time_end;
+        thrust::device_vector<T> chunk_list;
+        TemporalRoot<T,TS> roots;
+        NegativeRoot<T,TS> neg_seeds;
+
+        std::string sample_type; // "c"是cluster加载，"r"是recent, "u"是uniform
+        int layers;//""采样层数
+        int fanout;//采样邻居数
+        int k;
+        int layer;
+        TS allowed_offset; 
+        bool equal_root_time;
+        bool keep_root_time;
+        std::string op; //"f" follow, "r" 重映射
+        std::promise<TemporalResult<T,TS>> promise;
+        Task() = default;
+    };
+    template<typename Q>
+    class ThreadSafeQueue {
+        std::queue<Q> q;
+        mutable std::mutex m;
+        std::condition_variable cv;
+        std::atomic<bool> closed{false};
+        public:
+        void push(Q &&task) {
+            std::lock_guard<std::mutex> lock(m);
+            if (closed) return;
+            q.push(std::move(task));
+            cv.notify_one();
+        }
+        std::optional<Q> pop() {
+            std::unique_lock<std::mutex> lock(m);
+            cv.wait(lock, [&] { return !q.empty() || closed; });
+            if (q.empty()) return std::nullopt;
+            auto task = std::move(q.front());
+            q.pop();
+            return task;
+        }
+
+        void close() { closed = true; cv.notify_all(); }
+    };
+    ThreadSafeQueue<std::unique_ptr<Task>> task_queue;
+    ThreadSafeQueue<std::future<TemporalResult<T,TS>>> result_queue;
+    
+    struct Worker {
+        cudaStream_t stream;
+        Graph<T,TS>* graph;
+        std::thread thread;
+        std::atomic<bool> running{true};
+        int rank;
+        ThreadSafeQueue<std::unique_ptr<Task>> *task_queue_ptr;
+        //ThreadSafeQueue<std::future<TemporalResult<T,TS>>> *result_queue_ptr;
+
+        Remapper<T,TS> *res;
+        Worker(Graph<T,TS>* g, int rank, cudaStream_t stream_, ThreadSafeQueue<std::unique_ptr<Task>> *task_queue_): //ThreadSafeQueue<std::future<TemporalResult<T,TS>>> *result_queue_) : 
+            graph(g), rank(rank),stream(stream_), task_queue_ptr(task_queue_){
+            //cudaStreamCreate(&stream);
+            thread = std::thread([this]() { this->run(); });
+            res = new Remapper();
+            res->initlization(g->get_num_nodes());
+        }
+
+        ~Worker() {
+            running = false;
+            if (thread.joinable()) thread.join();
+            cudaStreamDestroy(stream);
+            delete res;
+        }
+
+
+        void run() {
+            cudaSetDevice(rank);  // 或多卡支持
+            while (running) {
+                std::optional<std::unique_ptr<Task>> task_ = task_queue_ptr->pop();
+                if (!task_) continue;
+                std::unique_ptr<Task> task = std::move(*task_);
+                try {
+                    TemporalResult<T,TS> result;
+                    task->roots = graph->get_seeds_in_chunks(task->chunk_list, 
+                        task->time_start, task->time_end, 1);
+                    if (task->sample_type == "recent" || task->sample_type == "uniform") {
+                        result = graph->sample_src_in_chunks_khop(
+                            task->roots, task->neg_seeds,
+                            task->fanout, task->layers,
+                            task->allowed_offset,
+                            task->equal_root_time,
+                            task->keep_root_time,
+                            task->sample_type
+                        );
+                    }
+                    else{
+                        result = graph->slice_by_chunk_ts(
+                            task->chunk_list,
+                            task->time_start,
+                            task->time_end,
+                            true,
+                            stream
+                        );
+                    }
+                    res->insert(result, (task->op == "f"), stream);
+                    task->promise.set_value(result);
+                } catch (...) {
+                    task->promise.set_exception(std::current_exception());
+                }
+            }
+        }
+    };
+    std::vector<std::unique_ptr<Worker>> workers;
+    // 线程安全的队列
+
+
+    public:
+    AsyncTemporalSampler();
+    AsyncTemporalSampler(Graph<T,TS>* graph, int rank, int num_workers)
+    {
+        for (int i = 0; i < num_workers; ++i) {
+            workers.emplace_back(std::make_unique<Worker>(graph, rank, graph->get_stream(), &task_queue));
+        }
+    }
+
+    ~AsyncTemporalSampler() {
+        task_queue.close();
+    }
+    // Python 侧调用：提交异步采样任务
+    void submit_query(
+                        TS time_start,
+                        TS time_end,
+                        thrust::device_vector<T> chunk_list,
+                        NegativeRoot<T,TS> negative_root,
+                        std::string sample_type, // "c"是cluster加载，"r"是recent, "u"是uniform
+                        int layers,//""采样层数
+                        int fanout,//采样邻居数
+                        TS allowed_offset, 
+                        bool equal_root_time,
+                        bool keep_root_time,
+                        std:: string op //"f" follow, "r" 重映射
+    ) {
+        
+        auto task = std::make_unique<Task>();
+        task->time_start = time_start;
+        task->time_end = time_end;
+        task->chunk_list = std::move(chunk_list);
+        //task->seeds = std::move(seeds);
+        task->neg_seeds = std::move(negative_root);
+        task->fanout = fanout;
+        task->layers = layers;
+        task->sample_type = sample_type;
+        task->allowed_offset = allowed_offset;
+        task->equal_root_time = equal_root_time;
+        task->keep_root_time = keep_root_time;
+        task->op = op;
+        std::future<TemporalResult<T,TS>> fut = task->promise.get_future();
+        task_queue.push(std::move(task));
+        result_queue.push(std::move(fut));
+    }
+    std::optional<TemporalResult<T,TS>> get(){
+        std::optional<std::future<TemporalResult<T,TS>>> res_ = result_queue.pop();
+        if(!res_){
+            return std::nullopt;
+        }
+        else{
+            return std::move(res_->get());
+        }
+        
+    }
+};
 
 
 // __global__ void compress_output_kernel(
@@ -1769,12 +1802,26 @@ public:
     using T = int64_t;
     using TS = int64_t;
     using Graph_T = Graph<T, TS>;
-    using Block_T = TemporalBlock<T, TS>;
-    
+   //using Block_T = TemporalBlock<T, TS>;
+
     Graph_T graph_;
-
-    CUDAGraph(Graph_T g) : graph_(std::move(g)) {}
-
+    int rank;
+    AsyncTemporalSampler<T,TS> *sampler;
+    CUDAGraph(Graph_T g, int rank) : graph_(std::move(g)),  sampler(nullptr)
+    {
+        this->rank = rank;
+        // 初始化采样器
+        try {
+            sampler = new AsyncTemporalSampler<T, TS>(&graph_, rank, 1);
+        } catch (const c10::Error& e) {
+            throw std::runtime_error(std::string("AsyncTemporalSampler construction failed: ") + e.msg());
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("AsyncTemporalSampler construction failed: ") + e.what());
+        } catch (...) {
+            throw std::runtime_error("AsyncTemporalSampler construction failed with unknown error");
+        }
+    }
+    ~CUDAGraph() = default;
 
     
     TemporalResult<T,TS>  sample_src_in_chunks_khop(
@@ -1814,6 +1861,37 @@ public:
         return graph_.slice_by_chunk_ts(chunks, time_begin, time_end, using_full_timestamp, stream);
     }
 
+    void submit_query(
+                        TS time_start,
+                        TS time_end,
+                        thrust::device_vector<T> chunk_list,
+                        torch::Tensor test_generate_samples,
+                        torch::Tensor test_generate_samples_ts,
+                        std::string sample_type, // "c"是cluster加载，"r"是recent, "u"是uniform
+                        int layers,//""采样层数
+                        int fanout,//采样邻居数
+                        TS allowed_offset, 
+                        bool equal_root_time,
+                        bool keep_root_time,
+                        std:: string op //"f" follow, "r" 重映射
+    ) 
+    {
+        sampler->submit_query(
+            time_start, time_end,
+            chunk_list,
+            get_negative_root(test_generate_samples, test_generate_samples_ts),
+            sample_type,
+            layers,
+            fanout,
+            allowed_offset,
+            equal_root_time,
+            keep_root_time,
+            op 
+        );
+    }
+    std::optional<TemporalResult<T,TS>> get() {
+        return sampler->get();
+    }
     private:
     template <typename DType>
     thrust::device_vector<DType> tensor_to_device_vector(const torch::Tensor& tensor) {
@@ -1831,13 +1909,15 @@ CUDAGraph from_edge_index(
     const torch::Tensor& dst,
     const torch::Tensor& ts,
     const torch::Tensor& row_chunk_mapper,
-    uint64_t stream = 0
+    uint64_t stream = 0,
+    int rank = 0
 ) {
 
     //print f("from_edge_index\n");
     try{
-        Graph<T,TS> g = Graph<T, TS>(n, chunk_size, src, dst, ts, row_chunk_mapper, stream);
-        return CUDAGraph(g);
+        Graph<T,TS> g = Graph<T, TS>(n, chunk_size,
+                            src, dst, ts, row_chunk_mapper, stream);
+        return CUDAGraph(g, rank);
     } 
     catch (const c10::Error& e) {
         throw std::runtime_error(std::string("Graph construction failed: ") + e.msg());

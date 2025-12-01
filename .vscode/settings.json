@@ -131,6 +131,7 @@
     "valarray": "cpp",
     "variant": "cpp",
     "netfwd": "cpp",
-    "__config": "cpp"
+    "__config": "cpp",
+    "*.hpp_v0": "cpp"
   }
 }
