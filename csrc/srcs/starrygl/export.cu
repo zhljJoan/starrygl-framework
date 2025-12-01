@@ -8,7 +8,7 @@ namespace py = pybind11;
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // using Block = TemporalBlock<int64_t,int64_t>;
     using Root_T = TemporalRoot<int64_t, int64_t>;
-    using Negative_T = TemporalRoot<int64_t, int64_t>;
+    using Negative_T = NegativeRoot<int64_t, int64_t>;
     using Neighbors_T = TemporalNeighbor<int64_t, int64_t>;
     using Result_T = TemporalResult<int64_t, int64_t>;
     py::class_<Root_T>(m, "TemporalRoot")
@@ -241,23 +241,44 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
             py::call_guard<py::gil_scoped_release>())
          .def("get_negative_root", &CUDAGraph::get_negative_root,
             py::arg("negative_root"),
-            py::arg("negative_time"));
-    m.def("from_edge_index", [](T n, T chunk_size,
+            py::arg("negative_time"))
+         .def("submit_query", &CUDAGraph::submit_query,
+            py::arg("time_start"),
+            py::arg("time_end"),
+            py::arg("chunk_list"),
+            py::arg("test_generate_samples"),
+            py::arg("test_generate_samples_ts"),
+            py::arg("sample_type"), // "c"是cluster加载，"r"是recent, "u"是uniform
+            py::arg("layers"),//""采样层数
+            py::arg("fanout"),//采样邻居数
+            py::arg("allowed_offset"), 
+            py::arg("equal_root_time"),
+            py::arg("keep_root_time"),
+            py::arg("op"), //"f" follow, "r" 重映射
+            py::call_guard<py::gil_scoped_release>())
+        .def("get", &CUDAGraph::get,
+            py::call_guard<py::gil_scoped_release>())
+    ;
+    m.def("from_edge_index", [](T n, T chunk_size, 
                             const torch::Tensor& src,
                             const torch::Tensor& dst,
                             const torch::Tensor& ts,
                             const torch::Tensor& row_chunk_mapper,
-                            uint64_t stream_ptr) -> CUDAGraph {
+                            uint64_t stream_ptr,
+                            int rank) -> CUDAGraph {
         try {
-            return from_edge_index(n, chunk_size, src, dst, ts, row_chunk_mapper, stream_ptr);
+            return from_edge_index(n, chunk_size, src, dst, ts, 
+                                    row_chunk_mapper, stream_ptr, rank);
         }
         catch (const std::exception& e) {
             PyErr_SetString(PyExc_RuntimeError, e.what());
             throw py::error_already_set();
         }
     },
-          py::arg("n"), py::arg("chunk_size"),
-          py::arg("src"), py::arg("dst"), py::arg("ts"), py::arg("mapper"), py::arg("stream") = 0,
+          py::arg("n"), py::arg("chunk_size"), 
+          py::arg("src"), py::arg("dst"), py::arg("ts"), py::arg("mapper"), 
+          py::arg("stream") = 0,
+          py::arg("rank") = 0,
           py::call_guard<py::gil_scoped_release>());
     register_nccl_comm(m);
     register_cuda_feature(m);
