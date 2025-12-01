@@ -2,11 +2,7 @@
 import os
 import sys
 from os.path import abspath, join, dirname
-current_path = os.path.dirname(os.path.abspath(__file__))
-parent_path = os.path.abspath(os.path.join(current_path, os.pardir))
-sys.path.append(parent_path)
 import argparse
-from typing import List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,20 +11,19 @@ import torch.distributed as dist
 from torch import Tensor
 from pathlib import Path
 
-from starrygl.data.graph import pyGraph
-
-from starrygl.core.route import Route
+current_path = os.path.dirname(os.path.abspath(__file__))
+parent_path = os.path.abspath(os.path.join(current_path, os.pardir))
+sys.path.append(parent_path)
 from starrygl.utils import DistributedContext
 from starrygl.utils.params import *
 from starrygl.utils.parser import parse_chunk_decay
 from starrygl.data import PartitionData, STGraphLoader, STGraphBlob
-from starrygl.nn.light import  MPNN_LSTM
-from starrygl.data.chunk_dataloader import ChunkAwareTemporalLoader
 
 
+import starrygl.lib.libstarrygl_comm
 #ops.sample_neighbor
 
-
+print(dir(starrygl.lib.libstarrygl_comm))
 class TrainingEngine:
     @staticmethod
     def parse_args():
@@ -38,8 +33,8 @@ class FlareEngine(TrainingEngine):
     def parse_args():
         parser = argparse.ArgumentParser()
         parser.add_argument("--model", type=str, required=True, choices=MODEL_CHOICES)
-        parser.add_argument("--dataset", type=str, required=True)#, choices=DATASET_CHOICES)
-        parser.add_argument("--data-root", type=str, default="/mnt/data/zlj/starrygl-data/")
+        parser.add_argument("--dataset", type=str, required=True, choices=DATASET_CHOICES)
+        parser.add_argument("--data-root", type=str, default="~/DATA/FlareGraph")
         parser.add_argument("--epochs", type=int, default=200)
         parser.add_argument("--learning-rate", "--lr", dest="lr", type=float, default=1e-3)
         parser.add_argument("--chunk-decay", type=str, default="auto:0.1")
@@ -221,8 +216,8 @@ class CTDGEngine(TrainingEngine):
     def parse_args():
         parser = argparse.ArgumentParser()
         parser.add_argument("--model", type=str, required=True, choices=MODEL_CHOICES)
-        parser.add_argument("--dataset", type=str, required=True)#, choices=DATASET_CHOICES)
-        parser.add_argument("--data-root", type=str, default="/mnt/data/zlj/starrygl-data/")
+        parser.add_argument("--dataset", type=str, required=True, choices=DATASET_CHOICES)
+        parser.add_argument("--data-root", type=str, default="~/DATA/FlareGraph")
         parser.add_argument("--epochs", type=int, default=200)
         parser.add_argument("--learning-rate", "--lr", dest="lr", type=float, default=1e-3)
         parser.add_argument("--chunk-decay", type=str, default="auto:0.1")
@@ -230,7 +225,6 @@ class CTDGEngine(TrainingEngine):
         parser.add_argument("--fulls-count", type=int, default=2)
         parser.add_argument("--no-routes", action="store_true", default=False)
         parser.add_argument("--no-states", action="store_true", default=False)
-        parser.add_argument("--load_full_sample_graph", action = "store_true", default = True)
         return parser.parse_args()
     def __init__(self, args=None):
         if args is None:
@@ -249,60 +243,38 @@ class CTDGEngine(TrainingEngine):
         path = self.data_root / "processed" / f"{self.data_name}" / f"{self.ctx.size:03d}_{self.ctx.rank+1:03d}.pth"
         self.ctx.sync_print(f"loading {path}...")
         data = PartitionData.load(path)
-        if self.args.load_full_sample_graph:
-            path = self.data_root / "ctdg" / f"{self.data_name}.pth"
-            full_data = torch.load(path)
-            
+        
+
         # num feats and num labels
-        #self.feats_dim: int = data.node_data['f'].data.size(-1)
+        self.feats_dim: int = data.node_data['f'].data.size(-1)
         
 
         # temporal decay
-    
-        self.chunk_index = data.pop_ndata('c')[0].item()
-        self.chunk_count = self.chunk_index.max().item() + 1
+        chunk_index = data.pop_ndata('c')[0].item()
+        self.chunk_count = chunk_index.max().item() + 1
         self.ctx.sync_print(f"chunk_count = {self.chunk_count}")
-        self.ctx.sync_print(f"local_nodes = {self.chunk_index.numel()}")
+        self.ctx.sync_print(f"local_nodes = {chunk_index.numel()}")
 
-        # self.chunk_decay = parse_chunk_decay(
-        #     pattern=self.args.chunk_decay,
-        #     chunk_count=self.chunk_count,
-        #     snaps_count=self.args.snaps_count,
-        #     fulls_count=self.args.fulls_count,
-        # )
-        # self.ctx.sync_print(f"chunk_decay = {self.chunk_decay}")
+        self.chunk_decay = parse_chunk_decay(
+            pattern=self.args.chunk_decay,
+            chunk_count=self.chunk_count,
+            snaps_count=self.args.snaps_count,
+            fulls_count=self.args.fulls_count,
+        )
+        self.ctx.sync_print(f"chunk_decay = {self.chunk_decay}")
 
         # dataloader
-        num_nodes = torch.tensor([self.chunk_index.numel()], dtype=torch.long, device="cpu").item()
-        print('num_nodes:{} check: {} {}\n'.format(num_nodes, data.edge_src.data.max().item(), data.edge_dst.data.max().item()))
-        
-        ctx = DistributedContext.get_default_context()
-        self.graph_stream = torch.cuda.Stream(device=ctx.device)
-        g = pyGraph(
-            src = data.edge_src.data.long(),
-            dst = data.edge_dst.data.long(),
-            ts = data.edge_data['ts'].data.long(),
-            node_num = num_nodes,
-            chunk_size = self.chunk_count,
-            chunk_mapper = self.chunk_index.long(),
-            stream = self.graph_stream.cuda_stream
-        )
-        print('finish initlize\n')
-        #self.loader = ChunkAwareTemporalLoader(data, 
-        #                                       device = torch.device('cuda:{}'.format(ctx._local_rank)),
-        #                                       stream=None, 
-        #                                       chunk_count = self.chunk_count,
-        #                                       chunk_index = self.chunk_index,
-        #                                       )
-        #self.loader = STGraphLoader.from_partition_data(data=data, device=self.ctx.device, chunk_index=chunk_index)
+        self.loader = STGraphLoader.from_partition_data(data=data, device=self.ctx.device, chunk_index=chunk_index)
 
         # split training data and test data
-        # self.train_end = data.pop_edata('train_mask').numel()
-        #self.train_loader = self.loader[:self.train_end]
+        train_ratio = 0.4
+        self.train_end = int(len(self.loader) * train_ratio)
+        self.train_loader = self.loader[: self.train_end]
 
-        #num_nodes = torch.tensor([chunk_index.numel()], dtype=torch.long, device="cpu")
-        #dist.all_reduce(num_nodes, op=dist.ReduceOp.SUM, group=self.ctx.cpu_group)
-        #self.part_loss_scale = chunk_index.numel() / num_nodes.item()
+        # compute partition loss scale
+        num_nodes = torch.tensor([chunk_index.numel()], dtype=torch.long, device="cpu")
+        dist.all_reduce(num_nodes, op=dist.ReduceOp.SUM, group=self.ctx.cpu_group)
+        self.part_loss_scale = chunk_index.numel() / num_nodes.item()
 
     def load_model(self):
         model_cls = eval(self.args.model.upper())
@@ -413,7 +385,3 @@ class CTDGEngine(TrainingEngine):
             comm_time = route_timer.get()
             self.ctx.update_epoch(f"train_loss=>{train_loss:.4f} eval_loss=>{eval_loss:.4f} comm_time=>{comm_time:.4f}s")
             self.ctx.info(ep=ep+1, train_loss=train_loss, eval_loss=eval_loss, comm_time=comm_time)
-
-
-if __name__ == "__main__":
-    CTDGEngine().run()
