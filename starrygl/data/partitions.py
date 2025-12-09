@@ -11,7 +11,7 @@ import dgl
 import dgl.function as fn
 from dgl.heterograph import DGLBlock
 
-from .collection import TensorData, RouteData
+from .collection import FastChunkCachedTensorData, TensorData, RouteData
 
 
 __all__ = [
@@ -391,3 +391,37 @@ class PartitionData:
     
     def set_device_type(self, device_type: str='c'):
         self.device_type = device_type
+        
+    def prefetch_chunks(self, chunk_ids: List[int], time_id: int):
+        if 'f' in self.node_data:
+            if isinstance(self.node_data['f'], FastChunkCachedTensorData):
+                self.node_data['f'].prefetch_chunks(chunk_ids, time_id)
+        if 'f' in self.edge_data:
+            if isinstance(self.edge_data['f'], FastChunkCachedTensorData):
+                self.edge_data['f'].prefetch_chunks(chunk_ids, time_id)
+                
+    def register_to_chunk_cached_data(self, node_chunk_id, cache_capacity=16, device=torch.device('cuda')):
+        """
+        Register this PartitionData to the FastChunkCachedTensorData.
+        This is used to ensure that the data is cached in the GPU memory.
+        """
+        if 'f' in self.node_data:
+            if isinstance(self.node_data['f'], TensorData) and self.node_data['f'].device.type == 'c':
+                self.node_data['f'] = FastChunkCachedTensorData(
+                    self.node_data['f'].ptr,
+                    self.node_data['f'].data,
+                    node_chunk_id,
+                    cache_capacity,
+                    device,
+                )
+                    
+    def register_to_edge_chunk_cached_data(self, node_chunk_id, cache_capacity=16, device=torch.device('cuda')):
+        if 'f' in self.edge_data:
+            if isinstance(self.edge_data['f'], TensorData) and self.edge_data['f'].device.type == 'c':
+                self.edge_data['f'] = FastChunkCachedTensorData(
+                    self.edge_data['f'].ptr,
+                    self.edge_data['f'].data,
+                    node_chunk_id,
+                    cache_capacity,
+                    device,
+                )
