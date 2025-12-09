@@ -189,6 +189,7 @@ class GCN(AsyncModule):
                 r = route
                 x = await conv.async_forward(g, x, route=r)
         return x
+    
 
 
 class GraphAttention(AsyncModule):
