@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from typing import *
 
-from starrygl.data import STGraphBlob
+from starrygl.data import 
 
 from ..lstm import LSTMCell
 from ..graphconv import GCN
@@ -24,7 +24,7 @@ class MPNN_LSTM(nn.Module):
         ])
         self.out = nn.Linear(hidden_size, output_size)
     
-    def forward(self, seqs: STGraphBlob):
+    def forward(self, seqs: AsyncGraphBatch) -> List[Tensor]:
         outs: List[Tensor] = []
 
         inps: List[Tensor] = self.gcn.layerwise(seqs.values())

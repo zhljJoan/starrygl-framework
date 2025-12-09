@@ -132,6 +132,7 @@ class AsyncBlock:
     def __init__(self, graph: pyGraph, index: int):
         self.graph = graph
         self.index = index
+        
     def value(self):
         out = self.graph.get_last_sample()
         nid_mapper = out.nodes_remapper_id
@@ -139,7 +140,41 @@ class AsyncBlock:
         neg_roots = out.neg_roots
         neighbors = out.neighbors
         return (root, neg_roots, neighbors, nid_mapper)
-        
+    
+    @staticmethod
+    def to_block(root, neg_roots, neighbors, nid_mapper):
+        mfgs = []
+        for i in range(len(neighbors)):
+            if i == 0:
+                start_ptr = neighbors[i].start_ptr
+                end_ptr = neighbors[i].end_ptr    
+                indptr = torch.cumsum(end_ptr - start_ptr, dim=0).to(device=torch.device('cuda:{}'.format(torch.distributed.get_rank())))
+                indices = torch.range(neighbors[i].start_ptr[-1],device = torch.device('cuda:{}'.format(torch.distributed.get_rank())))
+                
+                start = torch.repeat_interleave(start_ptr, end_ptr - start_ptr, dim=0)
+                new_ind = torch.arange(start_ptr.size(0), device=torch.device('cuda:{}'.format(torch.distributed.get_rank())))
+                ind = new_ind - indptr + start
+                indices = indices[ind]
+                b = dgl.create_block(('csc',indptr,indices),num_src_nodes = indices[-1], num_dst_nodes = len(start_ptr))
+                b.srcdata['ts'] = neighbors[i].neighbors_ts[indices]
+                b.srcdata['nid'] = neighbors[i].neighbors[indices]
+                b.srcdata['eid'] = neighbors[i].neighbors_eid[indices]
+                
+            else:
+                indptr = neighbors[i].root_start_ptr
+                indices = torch.range(neighbors[i].start_ptr[-1],device = torch.device('cuda:{}'.format(torch.distributed.get_rank())))
+                
+                b = dgl.create_block(('csc',indptr,indices),num_src_nodes = len(indices), num_dst_nodes = len(indptr))
+                b.srcdata['ts'] = neighbors[i].neighbors_ts
+                b.srcdata['nid'] = neighbors[i].neighbors
+                b.srcdata['eid'] = neighbors[i].neighbors_eid
+            
+            mfgs.append(b)
+        mfgs.reverse()
+        return root,neg_roots, mfgs, nid_mapper
+                
+                
+            
 class AsyncGraphBlob:
     def __init__(self,  
                  graph: pyGraph, 
@@ -160,4 +195,19 @@ class AsyncGraphBlob:
                 op=('f' if i > 0 else 'r')  # Only the first graph gets the operation
             )
             self.graph.append(AsyncBlock(graph,i))
+            
+    def to_block(self):
+        roots = []
+        neg_roots = []
+        neighbors = []
+        nid_mapper = []
+        for i in range(len(self.graph)):
+            root, neg_root, neighbor, mapper = self.graph[i].value()
+            roots.append(root)
+            neg_roots.append(neg_root)
+            neighbors.append(neighbor)
+            nid_mapper.append(mapper)
+        
+        return AsyncBlock.to_block(roots, neg_roots, neighbors, nid_mapper)
+
 
