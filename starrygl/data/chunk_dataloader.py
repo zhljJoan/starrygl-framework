@@ -1,4 +1,4 @@
-from asyncio import Queue
+from asyncio import Future, Queue
 import collections
 from typing import Dict, List, Optional, Tuple, Union
 import torch
@@ -8,7 +8,7 @@ import dgl
 
 from starrygl.data import NodeState
 from starrygl.data.collection import FastChunkCachedTensorData
-from starrygl.data.graph import AsyncGraphBlob, pyGraph
+from starrygl.graph.graph import AsyncBlock, AsyncGraphBlob, pyGraph
 from starrygl.data.partitions import PartitionData
 
 
@@ -116,6 +116,16 @@ class StarryGLDataset:
             curr += time_window
             step += 1
 
+class AsyncStarryGLBatch:
+    def __init__(self,
+                 tasks: List[Future],
+                 ):
+        self.tasks = tasks
+        self.meta_graphs = []
+        self.state = []
+        
+    def set(self, i, key, value):
+        self.state[i][key] = value
 
 class StarryGLDataLoader:
     def __init__(self, 
@@ -124,6 +134,8 @@ class StarryGLDataLoader:
                  sampling_config: dict,
                  mode: str = 'CTDG',
                  prefetch_factor: int = 2,
+                 partition_data: Optional[PartitionData] = None,
+                 stale_node_state: Optional[NodeState] = None,
                  ): # 例如每次只训练 50% 的 Chunk
         
         self.dataset = dataset
@@ -131,13 +143,20 @@ class StarryGLDataLoader:
         self.cfg = sampling_config
         self.mode = mode
         self.prefetch_factor = prefetch_factor
-        
+        self.partition_data = partition_data   
+        self.stale_node_state = stale_node_state   
         self.task_iter = None
         self.task_in_flight = 0
         
-        self.metadat_queue = collections.deque(maxlen=prefetch_factor)
-
+        self.meta_queue = queue.Queue(maxsize=prefetch_factor)
+        self.ready_queue = queue.Queue(maxsize=prefetch_factor)
+        
+        self.stop_event = threading.Event()
+        self.threads = []
+        
     def __iter__(self):
+        
+        self.stop_event.clear()
         self.task_iter = self.dataset.generate_tasks_stream(
             time_window=self.cfg['time_window'],
             chunks_per_batch=self.cfg['chunks_per_batch'],
@@ -145,12 +164,19 @@ class StarryGLDataLoader:
         )
         
         self.task_in_flight = 0
+
+        self.worker_thread = threading.Thread(
+            target=self._prefetch_loop,
+            args=(self.task_iter,),
+            daemon=True
+        )
+        self.worker_thread.start()
         
         # 预热流水线
         for _ in range(self.prefetch_factor):
             if not self._submit_next():
                 break
-            
+        
         return self
 
     def _submit_next(self):
@@ -172,7 +198,7 @@ class StarryGLDataLoader:
                 policy=self.cfg,
                 test_generate_kwargs={},
             )
-            self.feat_store.prefetch(task['chunks'], 0)
+            self.partition_data.prefetch_chunks(task['chunks'], 0)
             self.metadat_queue.append(batch_graph)
         else:
             batch_graph = AsyncGraphBlob(
@@ -184,7 +210,9 @@ class StarryGLDataLoader:
                 test_generate_kwargs={},
             )
             self.metadat_queue.append(batch_graph)
-            [self.feat_store.prefetch(task['chunks'],i) for i in range(task['time_start'], task['time_end'])]
+            for i in range(task['time_start'], task['time_end']):
+                # 预取每个时间段的 chunk 数据
+                self.partition_data.prefetch_chunks(task['chunks'], i)
         
         self.task_in_flight += 1
         return batch_graph
@@ -206,8 +234,26 @@ class StarryGLDataLoader:
             
         return temp_res
     
-    def assemble_batch(self, sampled_graph: AsyncGraphBlob) -> StarryGLBatch:
-        sampled_graph.value()
+    def generate_snap_blob(self, graph: AsyncBlock, mapper: torch.Tensor, batch:AsyncStarryGLBatch, t: int = 0) -> AsyncStarryGLBatch:
+        g = graph.value()
+        root, neg_roots, mfgs, nid_mapper = AsyncBlock.to_block(
+            g.root, g.neg_roots, g.neighbors, g.nid_mapper
+        )
+        for i,mfg in enumerate(mfgs):
+            for l,b in enumerate(mfg): 
+        node_feat = PartitionData.node_data['f'].select(
+            self.partition_data, root, neg_roots, neighbors, nid_mapper
+        )
+        
+    def assemble_batch(self, sampled_graph: AsyncGraphBlob) -> AsyncStarryGLBatch:
+        graphs = self.meta_queue.popleft()
+        for i, g in enumerate(graphs):
+            if g is None:
+                continue
+            # 组装成 StarryGLBatch
+            sampled_graph = self.generate_snap_blob(g, t)
+            if sampled_graph is not None:
+                return sampled_graph
         
                     
 
