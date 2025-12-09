@@ -1,11 +1,14 @@
 from asyncio import Queue
+import collections
 from typing import Dict, List, Optional, Tuple, Union
 import torch
 from torch import Tensor
 from dgl import DGLGraph
 import dgl
 
-from starrygl.data.graph import pyGraph
+from starrygl.data import NodeState
+from starrygl.data.collection import FastChunkCachedTensorData
+from starrygl.data.graph import AsyncGraphBlob, pyGraph
 from starrygl.data.partitions import PartitionData
 
 
@@ -29,99 +32,183 @@ from torch_sparse import SparseTensor
 from .partitions import PartitionData
 
 
+import torch
+import torch.distributed as dist
+from typing import List, Dict, Optional, Iterator
+import threading
+import queue
 
-class ChunkState:
-    def __init__(self, chunk_index, chunk_count):
-        value = torch.stack((torch.arange(chunk_count),chunk_index))
-        _value, ind = value.sort(dim = 1)
-        self.chunk_nodes = _value[1,:]
-        self.chunk_ptr = torch.zeros(chunk_count + 1, dtype=torch.int64)
-        self.chunk_ptr[1:] = torch.cumsum(torch.bincount(self.chunk_indicesp[0,:]), dim=0)
-        self.order_ind = ind
+# 假设这些是你之前定义的模块
+# from .feature_cache import FastChunkCachedTensorData
+# from .node_state import NodeState
+# from .cpp_wrapper import pyGraph, starrygl_ops  # 你的C++封装
+
+# =============================================================================
+# 1. 数据集定义 (Task Generator)
+# =============================================================================
+import torch
+import random
+from typing import Iterator
+
+class StarryGLDataset:
+    def __init__(self, 
+                 node_chunk_id: torch.Tensor, 
+                 ts: torch.Tensor, 
+                 rank: int = 0, 
+                 world_size: int = 1):
+        self.node_chunk_id = node_chunk_id
+        self.ts = ts
+        self.rank = rank
+        self.world_size = world_size
         
-    
-class ChunkAwareTemporalLoader:
-    """支持chunk划分的数据加载器"""
-    
-    def __init__(self, data: PartitionData,
-                 device:torch.device,
-                 stream: torch.cuda.Stream,
-                 g: pyGraph,
-                 neg_set : Tensor | None = None,):
-        self.data = data
-        self.device = device
-        self.stream = stream if stream is not None else torch.cuda.Stream(device = device)
+        self.min_t = self.ts.min().item()
+        self.max_t = self.ts.max().item()
+        
+        # 本地持有的所有 chunk ID
+        self.num_chunks = int(node_chunk_id.max()) + 1
+        self.local_chunks = [c for c in range(self.num_chunks) if c % world_size == rank]
+        
+    def generate_tasks_stream(
+        self, 
+        time_window: int, 
+        chunks_per_batch: int = 16, # <--- 核心参数：每次只加载这么多 chunk
+        shuffle_chunks: bool = True
+    ) -> Iterator[dict]:
+        """
+        流式生成任务。
+        策略：Time Window -> Shuffle Chunks -> Split into Mini-batches
+        """
+        curr = self.min_t
+        step = 0
+        
+        while curr < self.max_t:
+            end = min(curr + time_window, self.max_t)
+            
+            # 1. 获取当前时间段需要处理的 Chunks
+            # (如果是全量训练，就是 self.local_chunks)
+            # (如果是活跃 chunk 训练，可以在这里先筛选一遍 active chunks)
+            candidate_chunks = self.local_chunks[:] 
+            
+            # 2. 随机打乱 Chunk 顺序 (保证随机性)
+            if shuffle_chunks:
+                random.shuffle(candidate_chunks)
+            
+            # 3. 将 Chunk 列表切分为多个 Mini-batches
+            # 只有这样，Feature Cache 才能通过 LRU 机制循环利用显存
+            num_batches = math.ceil(len(candidate_chunks) / chunks_per_batch)
+            
+            for i in range(num_batches):
+                # 切片
+                start_idx = i * chunks_per_batch
+                end_idx = min((i + 1) * chunks_per_batch, len(candidate_chunks))
+                batch_chunks = candidate_chunks[start_idx : end_idx]
+                
+                chunk_tensor = torch.tensor(batch_chunks, dtype=torch.long)
+                
+                yield {
+                    'time_start': curr,
+                    'time_end': end,
+                    'chunks': chunk_tensor, # 这个 tensor 很小，不会导致 OOM
+                    'step': step,
+                    'sub_step': i # 标记是当前时间窗的第几个子批次
+                }
+            
+            curr += time_window
+            step += 1
 
 
-        self.neg_set = neg_set
-        self.g = g
+class StarryGLDataLoader:
+    def __init__(self, 
+                 dataset: StarryGLDataset,
+                 graph_engine: 'pyGraph', 
+                 sampling_config: dict,
+                 mode: str = 'CTDG',
+                 prefetch_factor: int = 2,
+                 ): # 例如每次只训练 50% 的 Chunk
         
-        self.load_queue = Queue(maxsize=10)
+        self.dataset = dataset
+        self.graph = graph_engine
+        self.cfg = sampling_config
+        self.mode = mode
+        self.prefetch_factor = prefetch_factor
         
-    def is_continuous_time(self):
-        return self.data.time_type == 'c'    
-    
-    def __len__(self):
-        if self.is_continuous_time():
-            return self.data.num_events
-        else:
-            return self.data.num_snaps
-    
-    @staticmethod 
-    def generate_chunk_ts_order(type = 'random'):
-        time_snaps = []
-        chunk_queries = []
+        self.task_iter = None
+        self.task_in_flight = 0
         
+        self.metadat_queue = collections.deque(maxlen=prefetch_factor)
+
     def __iter__(self):
-        yield from self.__call__()
+        self.task_iter = self.dataset.generate_tasks_stream(
+            time_window=self.cfg['time_window'],
+            chunks_per_batch=self.cfg['chunks_per_batch'],
+            shuffle_chunks=self.cfg.get('shuffle_chunks', True)
+        )
         
-    
-    def fetch_subgraph(self, time_queries, chunk_list):
-        for time_s, time_e in time_queries:
-            subgraph = self.data.load_chunked_subgraph(time_s, time_e, chunk_list)
-        return subgraph
+        self.task_in_flight = 0
+        
+        # 预热流水线
+        for _ in range(self.prefetch_factor):
+            if not self._submit_next():
+                break
+            
+        return self
 
-    def fetch_khop_subgraph(self, time_queries, chunk_list):
-        for time_s, time_e in time_queries:
-            subgraph = self.data.load_chunked_khop_subgraph(time_s, time_e, chunk_list
-                                                    , device = self.device
-                                                    , stream = self.stream
-                                                    )
-        return subgraph 
-    
-    def load_chunked_subgraph(self, time_s, time_e, chunk_list):
+    def _submit_next(self):
+        try:
+            # 从生成器获取下一个任务 (Lazy Evaluation)
+            task = next(self.task_iter)
+        except StopIteration:
+            return None
+            
+        # 1. 提交图采样 (C++ Async)
+        # 这里的 chunk_list 已经是随机采样过的小集合了
         
-        
-    def __call__(self, 
-                 chunk_order: Tensor | None = None,
-                 time_queries: List[float|int] | None = None,
-    ):
-        if self.load_queue.empty():
+        if self.mode == 'CTDG':
+            batch_graph = AsyncGraphBlob(
+                self.graph,
+                time_start=[task['time_start']],
+                time_end=[task['time_end']],
+                chunk_list=[task['chunks']],
+                policy=self.cfg,
+                test_generate_kwargs={},
+            )
+            self.feat_store.prefetch(task['chunks'], 0)
+            self.metadat_queue.append(batch_graph)
         else:
-            yield self.load_queue.popleft()
+            batch_graph = AsyncGraphBlob(
+                self.graph,
+                time_start=[i for i in range(task['time_start'], task['time_end'])],
+                time_end=[i+1 for i in range(task['time_start'], task['time_end'])],
+                chunk_list=[task['chunks']],
+                policy=self.cfg,
+                test_generate_kwargs={},
+            )
+            self.metadat_queue.append(batch_graph)
+            [self.feat_store.prefetch(task['chunks'],i) for i in range(task['time_start'], task['time_end'])]
+        
+        self.task_in_flight += 1
+        return batch_graph
 
-    
-    def chunk_aware_loading(self, chunk_order: Tensor, chunk_batch = 10,
-                            time_queries: List[float] = None, 
-                            event_index_queries: List[float] = None,
-                            
-                            ):
-        """chunk感知的数据加载"""
-        assert time_queries is None or event_index_queries is None
+    def __next__(self):
+        # (保持原有逻辑不变)
+        if self.task_in_flight == 0:
+            raise StopIteration
+            
+        temp_res = self.metadat_queue.popleft()  # 弹出一个任务
         
-        if time_queries is not None:
-            for query_time in time_queries:
-                for chunk_list in chunk_order.split(chunk_batch):
-                    yield self.load_timesnap_subgraph(query_time, chunk_list)
-                    
-        elif event_index_queries is not None:
-            for event_index_query in event_index_queries:
-                for chunk_list in chunk_order.split(chunk_batch):
-                    yield self.load_eventcount_subgraph(event_index_query, chunk_list)
-        else:
-            for i in range(self.data.num_snaps):
-                for chunk_list in chunk_order.split(chunk_batch):
-                    yield self.load_timesnap_subgraph([i,i], chunk_list)
+        # 补充下一个任务
+        if not self._submit_next():
+            self.metadat_queue.append(None)
+        self.task_in_flight -= 1
+        
+        if temp_res is None:
+            raise StopIteration
+            
+        return temp_res
+    
+    def assemble_batch(self, sampled_graph: AsyncGraphBlob) -> StarryGLBatch:
+        sampled_graph.value()
+        
                     
 
     

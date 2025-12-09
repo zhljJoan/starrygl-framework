@@ -12,25 +12,28 @@ from typing import *
 import dgl
 from dgl.heterograph import DGLBlock
 
+from starrygl.cache.replica_table import CSRReplicaTable, UVACSRReplicaTable
+
 # from torch_scatter import scatter_add
 from .timer import EventTimer
 
 class DistRouteIndex:
     
+    part_param = (0xFFFF ^ (1<<14))
     def __init__(self, index: Tensor, part_ids: Optional[Tensor] = None) -> None:
         if part_ids is None:
             self._data = index.long()
         else:
             index, part_ids = index.long(), part_ids.long()
             self._data = (index & 0xFFFFFFFFFFFF) | ((part_ids & 0xFFFF) << 48)
-        DistRouteIndex.part_param = (0xFFFF ^ (1<<14))
+       
     @property
     def loc(self) -> Tensor:
         return self._data & 0xFFFFFFFFFFFF
     
     @property
     def part(self) -> Tensor:
-        return (self._data >> 48) & DistRouteIndex.part_param
+        return (self._data >> 48) & self.part_param
     
     def set_shared(self, indx: slice):
         print(self._data.dtype, )
@@ -61,6 +64,60 @@ class DistRouteIndex:
     
     def size(self,index):
         return self._data.size(index)
+
+class PartitionState:
+    def __init__(self, loc_ids: Tensor, loc_eids: Tensor,
+                 is_shared: Tensor,
+                 partition_book:CSRReplicaTable|UVACSRReplicaTable, 
+                 dist_nid_mapper: Optional[Tensor] = None,
+                 dist_eid_mapper: Optional[Tensor] = None):
+        """
+        partition_book: 分区映射，通常是一个字典或类似结构
+        is_shared: 一个布尔张量，指示每个节点是否是共享的
+        """
+        self.partition_book = partition_book
+        self.loc_ids = loc_ids
+        self.loc_eids = loc_eids
+        self.is_shared = is_shared
+        self.dist_nid_mapper = dist_nid_mapper
+        self.dist_eid_mapper = dist_eid_mapper
+        
+    def get_partition_book(self):
+        return self.partition_book
+    
+    def is_shared(self, index: Tensor) -> Tensor:
+        """
+        返回一个布尔张量，指示哪些节点是共享的。
+        """
+        return self.is_shared[index]
+    
+    def get_global_id(self, local_id: Tensor) -> Tensor:
+        """
+        将本地 ID 转换为全局 ID。
+        """
+        return self.loc_ids[local_id]
+    
+    def get_global_eid(self, local_id: Tensor) -> Tensor:
+        """
+        将本地边 ID 转换为全局边 ID。
+        """
+        return self.loc_eids[local_id]
+    
+    def get_dist_id(self, local_id: Tensor) -> Tensor:
+        """
+        获取分布式 ID。
+        """
+        if self.dist_nid_mapper is not None:
+            return self.dist_nid_mapper[self.loc_ids[local_id]]
+    
+    def get_dist_eid(self, local_id: Tensor) -> Tensor:
+        """
+        获取分布式边 ID。
+        """
+        if self.dist_eid_mapper is not None:
+            return self.dist_eid_mapper[self.loc_eids[local_id]]
+    
+    
     
 class Route:
     def __init__(self,
@@ -68,6 +125,7 @@ class Route:
         recv_sizes: List[int],
         send_index: Tensor | None = None,
         group: dist.ProcessGroup | None = None,
+        task = None
     ) -> None:
         self.send_sizes = send_sizes
         self.recv_sizes = recv_sizes
@@ -163,6 +221,110 @@ class Route:
         g.route = None
         return [g]
     
+    @classmethod
+    def all_to_all_ind2ptr(cls, dist_index: Union[Tensor, DistRouteIndex], group: Optional[dist.ProcessGroup] = None):
+        """
+        同步版本的 ind2ptr，返回 Route 对象和辅助索引。
+        
+        Returns:
+            route: Route 对象，封装了通信计划
+            recv_ind: 从其他 rank 接收到的索引
+            sort_idx: 用于恢复原始顺序的排序索引
+        """
+        if isinstance(dist_index, Tensor):
+            dist_index = DistRouteIndex(dist_index)
+    
+        device = dist_index.device
+        world_size = dist.get_world_size(group)
+        
+        # 1. 排序
+        sort_idx = torch.argsort(dist_index.part)
+        sorted_loc = dist_index.loc[sort_idx]
+        sorted_part = dist_index.part[sort_idx]
+    
+        # 2. 交换 Size
+        send_counts = torch.bincount(sorted_part, minlength=world_size)
+        recv_counts = torch.empty_like(send_counts)
+        dist.all_to_all_single(recv_counts, send_counts, group=group)
+        
+        send_counts_list = send_counts.tolist()
+        recv_counts_list = recv_counts.tolist()
+        total_recv_num = recv_counts.sum().item()
+        
+        # 3. 交换 Index
+        recv_ind = torch.empty(total_recv_num, dtype=sorted_loc.dtype, device=device)
+        dist.all_to_all_single(
+            recv_ind, 
+            sorted_loc, 
+            output_split_sizes=recv_counts_list, 
+            input_split_sizes=send_counts_list, 
+            group=group
+        )
+        
+        # 4. 构建 Route
+        route = cls(
+            send_sizes=send_counts_list,
+            recv_sizes=recv_counts_list,
+            send_index=sorted_loc,
+            group=group
+        )
+        
+        return route, recv_ind, sort_idx
+
+    @classmethod
+    async def all_to_all_ind2ptr_async(cls, dist_index: Union[Tensor, DistRouteIndex], group: Optional[dist.ProcessGroup] = None):
+        """
+        异步版本的 ind2ptr，返回 Route 对象、辅助索引以及 Work 句柄。
+        
+        Returns:
+            route: Route 对象
+            recv_ind: 接收缓冲区 (注意：在使用前必须等待 work 完成)
+            sort_idx: 排序索引
+            work: 异步通信句柄，调用者必须执行 `work.wait()`
+        """
+        if isinstance(dist_index, Tensor):
+            dist_index = DistRouteIndex(dist_index)
+    
+        device = dist_index.device
+        world_size = dist.get_world_size(group)
+        
+        # 1. 排序
+        sort_idx = torch.argsort(dist_index.part)
+        sorted_loc = dist_index.loc[sort_idx]
+        sorted_part = dist_index.part[sort_idx]
+    
+        # 2. 交换 Size (这步通常很快，保持同步以简化逻辑)
+        send_counts = torch.bincount(sorted_part, minlength=world_size)
+        recv_counts = torch.empty_like(send_counts)
+        dist.all_to_all_single(recv_counts, send_counts, group=group)
+        
+        send_counts_list = send_counts.tolist()
+        recv_counts_list = recv_counts.tolist()
+        total_recv_num = recv_counts.sum().item()
+        
+        # 3. 启动异步交换 Index
+        recv_ind = torch.empty(total_recv_num, dtype=sorted_loc.dtype, device=device)
+        work = dist.all_to_all_single(
+            recv_ind, 
+            sorted_loc, 
+            output_split_sizes=recv_counts_list, 
+            input_split_sizes=send_counts_list, 
+            group=group,
+            async_op=True
+        )
+        
+        # 让出 CPU
+        await asyncio.sleep(0.0)
+        
+        # 4. 构建 Route
+        route = cls(
+            send_sizes=send_counts_list,
+            recv_sizes=recv_counts_list,
+            send_index=sorted_loc,
+            group=group
+        )
+        
+        return route, recv_ind, sort_idx, work
     @classmethod
     def from_subgraph(cls, node_parts:Tensor|int, is_shareds: Tensor, edge_index: Tensor, num_parts: int | None = None, idtype = torch.int32):
         pass
@@ -353,6 +515,8 @@ class RouteRecvFunction(autograd.Function):
         r_ctx.backward_send(grad_output)
 
         return torch.empty(0, dtype=torch.float32, device="cpu")
+
+
 
 class RouteContext:
     def __init__(self, route: Route, reverse: bool = False, group: dist.ProcessGroup | None = None):
