@@ -364,7 +364,7 @@ class FastChunkCachedTensorData(TensorData):
                 real_size = src_tensor.size(0)
                 self.gpu_buffer[slot_id, :real_size].copy_(src_tensor, non_blocking=True)
 
-    def get_features(
+    def select(
         self,
         node_ids: torch.Tensor,
         time_id: int,

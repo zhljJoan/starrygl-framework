@@ -173,8 +173,7 @@ class AsyncBlock:
         mfgs.reverse()
         return root,neg_roots, mfgs, nid_mapper
                 
-                
-            
+
 class AsyncGraphBlob:
     def __init__(self,  
                  graph: pyGraph, 
@@ -196,18 +195,5 @@ class AsyncGraphBlob:
             )
             self.graph.append(AsyncBlock(graph,i))
             
-    def to_block(self):
-        roots = []
-        neg_roots = []
-        neighbors = []
-        nid_mapper = []
-        for i in range(len(self.graph)):
-            root, neg_root, neighbor, mapper = self.graph[i].value()
-            roots.append(root)
-            neg_roots.append(neg_root)
-            neighbors.append(neighbor)
-            nid_mapper.append(mapper)
-        
-        return AsyncBlock.to_block(roots, neg_roots, neighbors, nid_mapper)
 
 
