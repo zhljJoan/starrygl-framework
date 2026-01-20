@@ -3,7 +3,8 @@ import torch
 from torch import Tensor
 from typing import *
 
-from starrygl.core.route import Route
+from starrygl.route.route import Route
+from starrygl.utils.context import DistributedContext
 
 
 class RouteData:
@@ -185,13 +186,15 @@ class TensorData:
             raise ValueError("Only step size of 1 is supported")
         s = 0 if k.start is None else k.start
         t = len(self) if k.stop is None else k.stop
-
+        print(s,t)
         a, b = self.ptr[s], self.ptr[t]
         ptr = [x - a for x in self.ptr[s:t+1]]
         data = self.data[a:b]
         return type(self)(ptr=ptr, data=data)
     
-    def select(self, k: int|slice, index):
+    def select(self, index, k: int|slice):
+        if(len(self.ptr)==1):
+            k = slice(0, 1) 
         if not isinstance(k, slice):
             k = slice(k, k + 1)
 
@@ -247,13 +250,17 @@ class FastChunkCachedTensorData(TensorData):
         data: torch.Tensor,
         node_chunk_id: torch.Tensor,  # (N,)
         cache_capacity: int = 16,
-        device: torch.device = torch.device("cuda:0")
+        device: torch.device = torch.device("cuda")
     ):
         # 保持数据在 CPU (最好是 pinned memory)
         super().__init__(ptr=ptr, data=data)
         
         self.node_chunk_id = node_chunk_id
-        self.device = device
+        if device.type == 'cpu':
+            pass
+        else:
+            ctx = DistributedContext.get_default_context()
+            self.device = ctx.device
         self.cache_capacity = cache_capacity
         self.feature_dim = data.size(1)
         self.num_nodes = node_chunk_id.size(0)
@@ -292,8 +299,8 @@ class FastChunkCachedTensorData(TensorData):
             node_to_local[global_nodes] = torch.arange(len(global_nodes))
 
         # 将静态映射表搬运到 GPU，用于 get_features 时的快速查表
-        self.gpu_node_chunk_id = self.node_chunk_id.to(device, non_blocking=True)
-        self.gpu_node_local_offset = node_to_local.to(device, non_blocking=True)
+        self.gpu_node_chunk_id = self.node_chunk_id.to(self.device, non_blocking=True)
+        self.gpu_node_local_offset = node_to_local.to(self.device, non_blocking=True)
 
         # ==========================================
         # 2. 初始化 GPU 资源 (Cache Resources)
@@ -303,19 +310,19 @@ class FastChunkCachedTensorData(TensorData):
         self.gpu_buffer = torch.zeros(
             (cache_capacity, self.max_chunk_size, self.feature_dim),
             dtype=self.data.dtype,
-            device=device
+            device=self.device
         )
         
         # GPU 页表: 映射 ChunkID -> BufferSlotID
         # 初始化为 -1 表示未缓存
-        self.gpu_page_table = torch.full((self.num_chunks,), -1, dtype=torch.long, device=device)
+        self.gpu_page_table = torch.full((self.num_chunks,), -1, dtype=torch.long, device=self.device)
         
         # CPU 端的 LRU 管理 (维护映射关系)
         self.chunk_to_slot_cpu: OrderedDict[int, int] = OrderedDict()
         self.free_slots = list(range(cache_capacity))
         
         # 异步流
-        self.prefetch_stream = torch.cuda.Stream(device=device)
+        self.prefetch_stream = torch.cuda.Stream(device=self.device)
 
     def prefetch_chunks(self, chunk_ids: List[int], time_id: int):
         """

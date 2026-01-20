@@ -96,30 +96,34 @@ class WebDataLoader:
         
         xs: List[Tensor] = []
         ys: List[Tensor | None] = []
+        degree = torch.zeros((num_nodes), dtype=torch.float32)
         for i in range(num_snapshots):
-            e, w = edges[i].long(), edge_weights[i]
-            i_deg = scatter_add(w, e[1], dim=0, dim_size=num_nodes).float()
-            o_deg = scatter_add(w, e[0], dim=0, dim_size=num_nodes).float()
-            xs.append(torch.stack([i_deg, o_deg], dim=1))
+            if(i < num_snapshots - 1):
+                e, w = edges[i].long(), edge_weights[i]
+                i_deg = scatter_add(w, e[1], dim=0, dim_size=num_nodes).float()
+                o_deg = scatter_add(w, e[0], dim=0, dim_size=num_nodes).float()
+                degree += i_deg + o_deg
+                xs.append(torch.stack([i_deg, o_deg], dim=1))
             if i > 0:
                 ys.append(torch.log(i_deg + 1))
-        ys.append(None) # no label for the last snapshot
+        #ys.append(None) # no label for the last snapshot
 
         dataset = []
-        for i in range(num_snapshots):
+        for i in range(num_snapshots-1):
             e, w = edges[i], edge_weights[i]
             x, y = xs[i], ys[i]
             dataset.append({
                 "edge_index": e,
                 "edge_weight": w,
                 "x": x,
-                "y": y,
+                "y": x,
+                "deg": degree
             })
         
         state_dict = {
             "num_nodes": num_nodes,
             "num_edges": num_edges,
-            "num_snapshots": num_snapshots,
+            "num_snapshots": num_snapshots-1,
             "num_life_edges": num_life_edges,
             "dataset": dataset,
         }
@@ -191,11 +195,11 @@ StackexchDatasetLoader = WebDataLoader(
 )
 
 web_data_loaders = [
-    IaSlashdotReplyDirDatasetLoader,
-    #RecAmazonRatingsDatasetLoader,
-    #SocBitcoinDatasetLoader,
-    #SocFlickrGrowthDatasetLoader,
-    #SocYoutubeGrowthDatasetLoader,
+    #IaSlashdotReplyDirDatasetLoader,
+    RecAmazonRatingsDatasetLoader,
+    SocBitcoinDatasetLoader,
+    SocFlickrGrowthDatasetLoader,
+    SocYoutubeGrowthDatasetLoader,
     # RecAmzBooksDatasetLoader,
     # StackexchDatasetLoader,
 ]

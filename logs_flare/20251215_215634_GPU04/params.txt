@@ -1,0 +1,11 @@
+{
+    "model": "mpnn_lstm",
+    "dataset": "WIKI",
+    "data_root": "/mnt/data/zlj/starrygl-data/",
+    "epochs": 1000,
+    "lr": 0.001,
+    "fulls_count": 2,
+    "load_full_sample_graph": false,
+    "chunk_size": 16,
+    "hot_ratio": 0.1
+}

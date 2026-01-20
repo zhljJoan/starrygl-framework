@@ -1,0 +1,8 @@
+epoch=>0:0.0034s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.05MB memory[cpu]=>3095.76MB
+epoch=>1:0.6736s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.05MB memory[cpu]=>3249.68MB
+epoch=>2:1.8041s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.05MB memory[cpu]=>3426.56MB
+epoch=>3:2.5928s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.05MB memory[cpu]=>3538.52MB
+epoch=>4:3.2988s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.05MB memory[cpu]=>3642.67MB
+epoch=>5:3.9732s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.05MB memory[cpu]=>3755.85MB
+epoch=>6:4.6945s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.05MB memory[cpu]=>3855.41MB
+epoch=>7:5.4250s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.05MB memory[cpu]=>3962.50MB

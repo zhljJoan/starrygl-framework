@@ -1,0 +1,3 @@
+epoch=>0:0.0032s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.74MB memory[cpu]=>3114.03MB
+epoch=>1:3.4630s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.74MB memory[cpu]=>3357.22MB
+epoch=>2:5.6937s train_loss=>0.0000 eval_loss=>0.0000 comm_time=>0.0000 memory[gpu]=>2.74MB memory[cpu]=>3454.14MB
