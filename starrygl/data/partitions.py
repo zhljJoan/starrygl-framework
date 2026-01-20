@@ -406,7 +406,9 @@ class PartitionData:
         This is used to ensure that the data is cached in the GPU memory.
         """
         if 'f' in self.node_data:
-            if isinstance(self.node_data['f'], TensorData) and self.node_data['f'].device.type == 'c':
+            
+            if isinstance(self.node_data['f'], TensorData) and self.node_data['f'].data.device.type == 'cpu':
+                print("Registering node data to chunk cache")
                 self.node_data['f'] = FastChunkCachedTensorData(
                     self.node_data['f'].ptr,
                     self.node_data['f'].data,
@@ -417,7 +419,8 @@ class PartitionData:
                     
     def register_to_edge_chunk_cached_data(self, node_chunk_id, cache_capacity=16, device=torch.device('cuda')):
         if 'f' in self.edge_data:
-            if isinstance(self.edge_data['f'], TensorData) and self.edge_data['f'].device.type == 'c':
+            if isinstance(self.edge_data['f'], TensorData) and self.edge_data['f'].data.device.type == 'cpu':
+                print("Registering edge data to chunk cache")
                 self.edge_data['f'] = FastChunkCachedTensorData(
                     self.edge_data['f'].ptr,
                     self.edge_data['f'].data,

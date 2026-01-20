@@ -10,8 +10,8 @@ from tqdm import tqdm
 
 from torch_scatter import scatter_add
 
-from starrygl.core import *
-from starrygl.core.route import Route
+from starrygl.route import *
+from starrygl.route.route import Route
 from starrygl.data import *
 
 
@@ -58,10 +58,10 @@ if __name__ == "__main__":
 
         for k in params:
             kk1, kk2, kk3 = params[k]
-            node_parts = torch.load(tgt_root / "nparts" / f"{name}_{kk1:03d}_{kk2:04d}_{kk3:0.1f}.pth").long()
+            node_parts, is_shared = torch.load(tgt_root / "nparts" / f"{name}_{kk1:03d}_{kk3:0.1f}.pth").long()
             
-            chunk_index = node_parts & 0xFFFF
-            chunk_index = chunk_index.to(torch.int16)
+            #chunk_index = node_parts & 0xFFFF
+            #chunk_index = chunk_index.to(torch.int16)
 
             node_parts = (node_parts >> 16 & 0x7FFF)
             is_shared = (node_parts & 0x8000)

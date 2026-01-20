@@ -107,17 +107,27 @@ class PartitionState:
         """
         获取分布式 ID。
         """
+        #print(self.dist_nid_mapper)
         if self.dist_nid_mapper is not None:
-            return self.dist_nid_mapper[self.loc_ids[local_id]]
+            print(local_id.device, self.loc_ids.device, self.dist_nid_mapper.device)
+            return self.dist_nid_mapper[self.loc_ids[local_id.to(self.loc_ids.device)]].to(local_id.device)
+        else:
+            return self.loc_ids[local_id]
     
     def get_dist_eid(self, local_id: Tensor) -> Tensor:
         """
         获取分布式边 ID。
         """
         if self.dist_eid_mapper is not None:
-            return self.dist_eid_mapper[self.loc_eids[local_id]]
+            return self.dist_eid_mapper[self.loc_eids[local_id.to(self.loc_eids.device)]].to(local_id.device)
+        else:
+            return self.loc_eids[local_id]
     
+    def get_part(self, local_id: Tensor):
+        return DistRouteIndex(self.get_dist_id(local_id)).part
     
+    def get_epart(self, local_id:Tensor):
+        return DistRouteIndex(self.get_dist_eid(local_id)).part
     
 class Route:
     def __init__(self,
@@ -330,7 +340,7 @@ class Route:
         pass
     
     @classmethod
-    def from_graph(cls, node_parts: Tensor | int, edge_index: Tensor, num_parts: int | None = None, idtype = torch.int32):
+    def from_graph(cls, node_parts: Tensor | int, is_shared:Tensor|int , edge_part:Tensor, edge_index: Tensor, num_parts: int | None = None, idtype = torch.int32):
         if not isinstance(node_parts, Tensor):
             num_nodes = int(node_parts)
             return cls.from_empty(num_nodes=num_nodes, edge_index=edge_index, idtype=idtype)

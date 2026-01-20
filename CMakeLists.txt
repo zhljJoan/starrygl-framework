@@ -68,8 +68,11 @@ target_include_directories(${PROJECT_NAME}_comm PRIVATE ${INCLUDE_DIR})
 
 # 编译选项
 target_compile_options(${PROJECT_NAME}_sampler PRIVATE -O3 -DTORCH_EXTENSION_NAME=lib${PROJECT_NAME}_sampler)
-target_compile_options(${PROJECT_NAME}_comm PRIVATE -O3 -DTORCH_EXTENSION_NAME=lib${PROJECT_NAME}_comm)
-
+# target_compile_options(${PROJECT_NAME}_comm PRIVATE -O3 -DTORCH_EXTENSION_NAME=lib${PROJECT_NAME}_comm)
+target_compile_options(${PROJECT_NAME}_comm PRIVATE 
+    -DTORCH_EXTENSION_NAME=lib${PROJECT_NAME}_comm
+    $<$<COMPILE_LANGUAGE:CUDA>:-G -g>
+)
 # CUDA 特定选项（关键！）
 if(WITH_CUDA)
     set_target_properties(${PROJECT_NAME}_comm PROPERTIES

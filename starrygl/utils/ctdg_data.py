@@ -28,22 +28,37 @@ class CTDGDataLoader:
 
     
 
-    def _read_web_data(self, path):
+    def _read_web_data(self, path ):
         path = Path(path).expanduser().resolve()
-        data = pd.read_csv(path,dtype=int)
-        src = np.array(data.src.values)
-        dst = np.array(data.dst.values)
-        time = np.array(data.time.values)
+        if path.suffix == ".edges":
+            data = pd.read_csv(path, sep='\s+', header=None, skiprows=2).to_numpy()
+            src = data[:, 0].astype(np.int64)
+            dst = data[:, 1].astype(np.int64)
+            if data.shape[1] == 3:
+                time = data[:, 2].astype(np.int64)
+            elif data.shape[1] == 4:
+                time = data[:, 3].astype(np.int64)
+        else:        
+            data = pd.read_csv(path)
+            src = np.array(data.src.values).astype(np.int64)
+            dst = np.array(data.dst.values).astype(np.int64)
+            time = np.array(data.time.values).astype(np.int64)
         num_nodes  = int(max(src.max().item(),dst.max().item())+1 )
         num_edges = int(src.shape[0])
         edges = torch.from_numpy(np.stack([src, dst, time ]))
-        ext_roll_values = np.array(data.ext_roll.values)  
-        train_mask = torch.from_numpy(ext_roll_values == 0)
-        val_mask = torch.from_numpy(ext_roll_values == 1)
-        test_mask = torch.from_numpy(ext_roll_values == 2)
+        if path.suffix == ".edges":
+            train_mask = torch.arange(num_edges) < int(num_edges * 0.7)
+            val_mask = (torch.arange(num_edges) < int(num_edges * 0.85))& (torch.arange(num_edges) >= int(num_edges * 0.7))
+            test_mask = torch.arange(num_edges) >= int(num_edges * 0.85)
+        else:
+            ext_roll_values = np.array(data.ext_roll.values).astype(np.int64)  
+            train_mask = torch.from_numpy(ext_roll_values == 0)
+            val_mask = torch.from_numpy(ext_roll_values == 1)
+            test_mask = torch.from_numpy(ext_roll_values == 2)
 
         return edges, num_nodes, num_edges, train_mask, val_mask, test_mask
     
+
     def _read_feat(self, root, num_nodes, num_edges):
         path = root/'node_features.pt'
         node_feats = None
@@ -70,7 +85,12 @@ class CTDGDataLoader:
     
     def get_dataset(self, root = None):
         root = Path(root).expanduser().resolve()
-        path = root/ self.name / "edges.csv"
+        path = root/ self.name / "edges"
+        if not path.exists():
+            path = root / self.name / f"{self.name}.edges"
+            if not path.exists():
+                print(f"File not found: {path}")
+                return None
         edges, num_nodes, num_edges, train_mask, val_mask, test_mask = self._read_web_data(path)
         i_deg = scatter_add(torch.ones(num_edges),edges[1],dim=0, dim_size = num_nodes).int()
         o_deg = scatter_add(torch.ones(num_edges),edges[0],dim=0, dim_size = num_nodes).int()
@@ -99,14 +119,22 @@ class CTDGDataLoader:
 if __name__ == "__main__":
     #src_root = "~/DATA/DynaHB"
     #tgt_root = "~/DATA/FlareGraph"
-    src_root = "/mnt/data/zlj/tgl_data/DATA"
+    #src_root = "/mnt/nfs/zlj/TGL-DATA"
+    #src_root = "/mnt/data/zlj/tgl_data/DATA"
+    src_root = "/mnt/data/zlj/starrygl-data/raw"
     tgt_root = "/mnt/data/zlj/starrygl-data"
     root = Path(tgt_root).expanduser().resolve() / "ctdg"
     root.mkdir(parents=True, exist_ok=True)
-    datasets = ["WIKI"]
-    for dataset in datasets:
-        dataloader = CTDGDataLoader(dataset)
+    for p in Path(src_root).expanduser().resolve().glob("*/"):
+        name = p.stem
+        if name in ['Flights','MOOC','LASTFM','REDDIT','stackoverflow','WIKI', 'wikitalk']:
+            continue
+        print(f"Processing {name}...")
+        dataloader = CTDGDataLoader(name)
         data = dataloader.get_dataset(src_root)
+        if data is None:
+            print(f"Failed to load {name}")
+            continue
         torch.save(data, root/f"{dataloader.name}.pth")
         num_nodes: int = data["num_nodes"]
         num_edges: int = data["num_edges"]
