@@ -1,3 +1,4 @@
+import os
 import torch
 
 from torch import Tensor
@@ -73,7 +74,12 @@ if __name__ == "__main__":
     for p in src_root.glob("*.pth"):
 
         name = p.stem
-
+        if os.path.exists(tgt_root / f"{name}_{num_inter_parts:03d}_{hot_nodes_ratio:0.1f}.pth"):
+            print(f"skip {name}...")
+            continue
+        
+        if name == 'BCB' or name == 'soc-flickr-growth':
+            continue
         if large_data_flags:
             if name not in large_data_names:
                 continue
@@ -91,6 +97,7 @@ if __name__ == "__main__":
         else:
             edge_index = torch.cat([data["edge_index"] for data in dataset], dim=1)
             
+            
         print(f"building graph {name}...")
         src = edge_index[0]
         dst = edge_index[1]
@@ -98,8 +105,11 @@ if __name__ == "__main__":
         g = dgl.graph((src, dst), num_nodes=num_nodes, idtype=torch.int64)
         # ntypes = get_node_types(g, 3)
         ntypes = None
-        if hot_nodes_ratio > 0 and 'deg' in dataset:
-            deg = dataset["deg"]
+        if hot_nodes_ratio > 0:
+            if isinstance(dataset,List):
+                deg = sum([dataset[i]['deg'] for i in range(len(dataset))])
+            elif 'deg' in dataset:
+                deg = dataset["deg"]
             num_hot = int(num_nodes * hot_nodes_ratio)
             _, idx = torch.topk(deg, num_hot)
             is_hot = torch.zeros(num_nodes, dtype=torch.bool)
@@ -113,11 +123,11 @@ if __name__ == "__main__":
         g0 = dgl.remove_edges(g, idx)
         print(f"partitioning {name} with k={num_inter_parts}, topk={hot_nodes_ratio}...")
         inter_nparts = apply_inter_partition(g0, node_types=ntypes, k=num_inter_parts)
-        intra_nparts = apply_intra_partition(g, inter_nparts, is_shared=is_hot, k=num_intra_parts)
-        if hot_nodes_ratio > 0:
-            inter_nparts |= (is_hot.type(torch.int32) << 14)
-            intra_nparts |= (is_hot.type(torch.int32) << 30)
-        print(hot_nodes_ratio, (intra_nparts >> 30).sum().item())
+        #intra_nparts = apply_intra_partition(g, inter_nparts, is_shared=is_hot, k=num_intra_parts)
+        #if hot_nodes_ratio > 0:
+        #    inter_nparts |= (is_hot.type(torch.int32) << 14)
+            #intra_nparts |= (is_hot.type(torch.int32) << 30)
+        #print(hot_nodes_ratio, (intra_nparts >> 30).sum().item())
 
         inter_p = tgt_root / f"{name}_{num_inter_parts:03d}_{hot_nodes_ratio:0.1f}.pth"
         intra_p = tgt_root / f"{name}_{num_inter_parts:03d}_{num_intra_parts:04d}_{hot_nodes_ratio:0.1f}.pth"
@@ -126,15 +136,15 @@ if __name__ == "__main__":
         for i in range(num_inter_parts):
             m = inter_nparts == i
             num_part_nodes = torch.count_nonzero(m).item()
-            x = intra_nparts[m] & 0xFFFF
-            x = [torch.count_nonzero(x == j).item() for j in range(num_intra_parts)]
-            x = torch.tensor(x).float()
-            std, mean = torch.std_mean(x)
-            print(f"  part {i}: {num_part_nodes} std={std.item():.2f} mean={mean.item():.2f}")
+            #x = intra_nparts[m] & 0xFFFF
+            #x = [torch.count_nonzero(x == j).item() for j in range(num_intra_parts)]
+            #x = torch.tensor(x).float()
+            #std, mean = torch.std_mean(x)
+            #print(f"  part {i}: {num_part_nodes} std={std.item():.2f} mean={mean.item():.2f}")
 
         
         print(f"saving {inter_p}...")
-        torch.save(inter_nparts, str(inter_p))
+        torch.save((inter_nparts,is_hot), str(inter_p))
 
-        print(f"saving {intra_p}...")
-        torch.save(intra_nparts, str(intra_p))
+        #print(f"saving {intra_p}...")
+        #torch.save(intra_nparts, str(intra_p))

@@ -1,7 +1,7 @@
 import torch
 
 class CSRReplicaTable:
-    def __init__(self, indptr: torch.Tensor, indices: torch.Tensor, locs: torch.Tensor):
+    def __init__(self, indptr: torch.Tensor, indices: torch.Tensor, locs: torch.Tensor, device: torch.device = torch.device('cpu')):
         """
         Args:
             indptr: [N+1] int64/int32, CSR 行指针
@@ -80,6 +80,8 @@ class CSRReplicaTable:
         target_ranks = self.indices[gather_indices]
         target_locs = self.locs[gather_indices]
         return src_indices, target_ranks, target_locs
+    
+
 
 class UVACSRReplicaTable:
 
@@ -174,7 +176,7 @@ class UVACSRReplicaTable:
     
     
 def build_replica_table(num_nodes, partition_book, num_parts, type = None):
-    indptr = torch.zeros(num_nodes + 1, dtype=torch.long, device=indices.device)
+    indptr = torch.zeros(num_nodes + 1, dtype=torch.long)
     indices = []
     halo_list = []
     for part in range(num_parts):
@@ -195,7 +197,7 @@ def build_replica_table(num_nodes, partition_book, num_parts, type = None):
     sorted_unique_pairs = all_pairs.unique(dim=1)
     indices = sorted_unique_pairs[1, :]
     locs = sorted_unique_pairs[2, :]
-    counts = sorted_unique_pairs[0, :]
+    counts = sorted_unique_pairs[0, :].bincount(minlength=num_nodes)
     indptr[1:] = torch.cumsum(counts, dim=0)
     if type == 'UVA':
         # UVACSRReplicaTable 需要 indices 在 CPU 上
@@ -210,3 +212,4 @@ def build_replica_table(num_nodes, partition_book, num_parts, type = None):
         indices=indices,
         locs=locs
     )
+

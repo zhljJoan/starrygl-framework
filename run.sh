@@ -10,16 +10,16 @@ DATA_CHOICES=("WIKI")
 
 for model in "${MODEL_CHOICES[@]}"; do
   for dataset in "${DATA_CHOICES[@]}"; do
-    echo "[FlareDTDG] Running model: $model on dataset: $dataset"
+    echo "[StarryGL] Running model: $model on dataset: $dataset"
     torchrun \
       --nproc_per_node 4 \
       --standalone \
-      ./test/test_sample.py \
+      ./test/test_offline.py \
         --model "$model" \
         --dataset "$dataset" \
         --epochs 1000 \
-        --chunk-decay "auto:0.1" \
-        --chunk-order "rand" \
+        #--chunk-decay "auto:0.1" \
+        #--chunk-order "rand" \
         #--snaps-count 8 \
         #--fulls-count 2
   done;
