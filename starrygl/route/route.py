@@ -13,6 +13,7 @@ import dgl
 from dgl.heterograph import DGLBlock
 
 from starrygl.cache.replica_table import CSRReplicaTable, UVACSRReplicaTable
+from starrygl.utils.partition_book import DistRouteIndex
 
 # from torch_scatter import scatter_add
 from .timer import EventTimer

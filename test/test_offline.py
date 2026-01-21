@@ -53,7 +53,9 @@ class TrainingEngine:
     def prepare_data(self):
         root = Path(self.args.data_root)
         suffix = f"{self.args.dataset}_{self.ctx.size:03d}"
-        
+        meta_data = torch.load(root / "ctdg" / f"{self.args.dataset}.pth")
+        num_nodes = meta_data['num_nodes']
+        num_edges = meta_data['num_edges']
         # 1. 路径查找
         self.processed_dir = root / "processed_atomic" / suffix / f"part_{self.ctx.rank}"
         cand = list((root / "nparts").glob(f"{suffix}*"))
@@ -69,8 +71,7 @@ class TrainingEngine:
         # 本地维护的 ID 集合 (用于 PartitionState 判断 remote)
         self.local_ids = pb_data[1].to(self.device)
         self.local_eids = pb_data[2].to(self.device) if len(pb_data) > 2 else None
-        self.num_total_nodes = sum([len(b) for b in p_book])
-        
+
         self.partition_state = PartitionState(
             loc_ids = p_book[torch.distributed.get_rank()],
             num_master_nums = self.local_ids.shape[0] ,
@@ -78,10 +79,13 @@ class TrainingEngine:
             node_replica_table= rep_table,
             loc_eids=self.local_eids,
             num_master_edges = self.local_eids.shape[0] if self.local_eids is not None else 0,
-            edge_mode = 'map'
+            edge_mode = 'map',
+            num_nodes = num_nodes,
+            num_edges = num_edges
+            
         )
 
-
+        
         self.ctx.sync_print("Initializing CPU States (Mailbox & History)...")
         feat_context = torch.load(self.meta_dir /f"part_{self.ctx.rank}"/"distributed_context.pt", map_location='cpu')
         self.edge_feat = feat_context.get('edge_feat', None)
@@ -90,11 +94,15 @@ class TrainingEngine:
         self.history_states = []
         for i in range(self.cfg["train"]["num_layers"]):
             memory_state = DistNodeState(
-                    node_nums=len(p_book[self.ctx.rank]),
+                    state = self.partition_state,
                     dim=self.cfg["train"]["hidden_dim"],
-                    partition_state=self.partition_state,
-                    device=self.ctx.device
                 )
+            self.history_states.append(memory_state)
+        if self.cfg['train']['memory_type'] is None:
+            memory_state = DistNodeState(
+                state = self.partition_state,
+                dim=self.cfg["train"]["hidden_dim"],
+            )
             self.history_states.append(memory_state)
         self.history_states_updater = HistoryLayerUpdater(self.history_states)
         
@@ -130,6 +138,7 @@ class TrainingEngine:
             device=self.device,
             partition_state=self.partition_state,
             context=self.graph_context,
+            hist_cache=self.history_states_updater
         )
     def prepare_model(self):
         self.router = CacheRouteManager.get_instance(self.ctx.group)
@@ -158,42 +167,7 @@ class TrainingEngine:
         """
         [Write-Back] 将 GPU 上计算出的新状态写回 CPU。
         """
-        # 1. 更新 Mailbox (通常使用正样本事件更新)
-        # TGN 逻辑：Src 和 Dst 发生了交互，产生新的 Memory/Message
-        # 这里需要从 batch.task_data 提取事件
-        # 注意：需要将 Global ID 和 Time 传回 CPU
-        with torch.no_grad():
-            src = batch.roots[0][0].cpu() # task_src
-            dst = batch.roots[0][1].cpu() # task_dst
-            # 时间戳在 layer_data 里或者是 task_ts
-            # 由于 MergedBatch 结构，我们去 layer_data[-1] 找 ts 比较麻烦
-            # 最好在 StarryBatchData 里透传 task_ts
-            # 暂时假设我们不更新 Mailbox (只读)，或者需要在这里补充 ts 获取逻辑
-            pass
-            
-        # 2. 更新 History (NodeState)
-        # 将最新计算的 h_out (Embedding) 写回
-        # h_out 对应的是 target nodes (src + dst + neg)
-        # 我们只更新正样本 (src, dst)
-        with torch.no_grad():
-            num_src = len(batch.roots[0][0])
-            num_dst = len(batch.roots[0][1])
-            
-            # 提取 Embedding (GPU)
-            emb_src = h_out[:num_src]
-            emb_dst = h_out[num_src : num_src+num_dst]
-            
-            # 对应的 Global ID (GPU -> CPU)
-            gid_src = batch.roots[0][0].cpu()
-            gid_dst = batch.roots[0][1].cpu()
-            
-            # 对应的 Time (需要从 block 或 task 获取)
-            # 简化：使用 dummy time 或当前 batch max time
-            
-            # 写入 CPU (Host Memory)
-            # 调用 Wrapper 的 update 接口
-            self.history.update(gid_src, emb_src.cpu())
-            self.history.update(gid_dst, emb_dst.cpu())
+        pass
 
     def train_epoch(self):
         self.model.train()
@@ -214,8 +188,6 @@ class TrainingEngine:
                 routes=batch.routes,
                 mailbox=mb_feat,
                 mail_ts=mb_ts,
-                # History 可以作为 memory 初始值传入，或者在 TGN 内部处理
-                # 这里假设 memory 状态由 Mailbox 驱动
             )
             
             # Loss

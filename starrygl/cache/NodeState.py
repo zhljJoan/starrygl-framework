@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from typing import Optional, Union, Tuple
+from typing import List, Optional, Union, Tuple
 
 from starrygl.utils.partition_book import DistRouteIndex, PartitionState
 
@@ -76,7 +76,7 @@ class DistNodeState:
     def prefetch(self, gids: Tensor, stream: Optional[torch.cuda.Stream] = None):
         if self.data.device.type == 'cpu':
             with torch.cuda.stream(stream):
-                loc_idx = self.state.to_local(gids, device=torch.device('cpu'))
+                loc_idx = self.state.node_mapper.to_local(gids, device=torch.device('cpu'))
                 return self.data[loc_idx].cuda(non_blocking=True), self.ts[loc_idx].cuda(non_blocking=True)
         return self[gids]
     # 兼容接口：Broadcast 现在等同于 Update (通信由外部 Router 控制)
