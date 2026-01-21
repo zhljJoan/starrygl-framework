@@ -1,7 +1,9 @@
-from mailbox import Mailbox
+
+import torch
 from typing import Optional, Union
 from torch import Tensor
 from starrygl.data.feature import DistFeatureCache
+from starrygl.data.mailbox import DistMailbox, Mailbox
 from starrygl.utils.partition_book import DistRouteIndex, PartitionState
 
 
@@ -25,7 +27,14 @@ class StarryglGraphContext:
         # 2. 自动封装 Mailbox
         self.mailbox = None
         if dim_out is not None and dim_out > 0:
-            self.mailbox = Mailbox(state, mailbox_size, dim_out, dim_edge_feat, device=self.device)
+            mailbox = Mailbox(
+                num_nodes=state.node_mapper.loc_nums,
+                mailbox_size=mailbox_size,
+                dim_out=dim_out,
+                dim_edge_feat=dim_edge_feat,
+                device=torch.device('cpu')  # 默认放在 CPU Pinned Memory
+            )
+            self.mailbox = DistMailbox(state, mailbox)
 
     def to(self, device):
         self.state.node_mapper.loc_ids = self.state.node_mapper.loc_ids.to(device)

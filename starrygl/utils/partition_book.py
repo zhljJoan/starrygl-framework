@@ -64,7 +64,8 @@ class IDMapper:
                  mode: str = 'identity',
                  dist_mapper: Optional[Tensor] = None,
                  replica_table: Optional[Union[CSRReplicaTable, UVACSRReplicaTable]] = None,
-                 offset: int = 0):
+                 offset: int = 0,
+                 global_num: int = 0):
         
         self.loc_ids = loc_ids          # 本地存储的 ID (Global)
         self._num_master = num_master    # Master 数量 (Owned)
@@ -72,8 +73,11 @@ class IDMapper:
         self.dist_mapper = dist_mapper  # 用于获取 Dist ID (可选)
         self.offset = offset
         self._replica_table = replica_table
+        self._global_num = global_num
         # 内部缓存的反向查表 (Global -> Local)
         self._g2l_map: Optional[Tensor] = None
+        if mode == 'map':
+            self.build_g2l_map()
 
     @property
     def loc_nums(self):
@@ -83,7 +87,7 @@ class IDMapper:
         return self._num_master
     @property
     def global_nums(self):
-        return self.dist_mapper.size(0) 
+        return self._global_num
     @property
     def replica_table(self):
         return self._replica_table
@@ -94,7 +98,7 @@ class IDMapper:
     def build_g2l_map(self):
         """构建 Global -> Local 的反向查表 (仅 'map' 模式需要)"""
         if self.mode == 'map' and self.loc_ids is not None:
-            max_id = self.loc_ids.max().item()
+            max_id = self.global_nums #self.loc_ids.max().item()
             self._g2l_map = torch.full((max_id + 1,), -1, dtype=torch.long, device=self.device)
             ids = self.loc_ids
             self._g2l_map[ids] = torch.arange(ids.size(0), dtype=torch.long, device=self.device)
@@ -122,7 +126,7 @@ class IDMapper:
         elif self.mode == 'map':
             if self._g2l_map is None:
                 raise RuntimeError("G2L Map not built! Call build_g2l_map() first.")
-            return self._g2l_map[raw_gids]
+            return self._g2l_map[raw_gids.to(self._g2l_map.device)]
         elif self.mode == 'dist_route_index':
             return raw_gids 
 
@@ -180,6 +184,8 @@ class PartitionState:
                  dist_eid_mapper: Optional[Tensor] = None,
                  edge_mode: str = 'identity',
                  edge_replica_table: Optional[Union[CSRReplicaTable, UVACSRReplicaTable]] = None,
+                 num_nodes: int = 0,
+                 num_edges: int = 0
                  
                 ):
         
@@ -189,7 +195,8 @@ class PartitionState:
             num_master=num_master_nums,
             mode=node_mode,
             dist_mapper=dist_nid_mapper,
-            replica_table=node_replica_table
+            replica_table=node_replica_table,
+            global_num=num_nodes
         )
         
         # --- 组合模式: 实例化 Edge Mapper (按需) ---
@@ -200,7 +207,8 @@ class PartitionState:
                 num_master=num_master_edges,
                 mode=edge_mode,
                 dist_mapper=dist_eid_mapper,
-                replica_table=edge_replica_table
+                replica_table=edge_replica_table,
+                global_num=num_edges
             )
 
     def build_g2l_maps(self):
