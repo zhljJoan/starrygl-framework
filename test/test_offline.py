@@ -6,15 +6,20 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 from torch.utils.data import DataLoader
+
 # === Path Injection ===
 current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.abspath(os.path.join(current_path, os.pardir))
 sys.path.append(str(parent_path))
 
+from starrygl.cache.NodeState import DistNodeState, HistoryLayerUpdater
+from starrygl.data.graph_context import StarryglGraphContext
+from starrygl.data.mailbox import DistMailbox
+from starrygl.utils.partition_book import PartitionState
 # === StarryGL Imports ===
 from starrygl.data.batches import AtomicDataset, SlotAwareSampler, collate_and_merge
 from starrygl.utils import DistributedContext
-from starrygl.cache.cache_route import PartitionState, CacheRouteManager
+from starrygl.cache.cache_route import CacheRouteManager
 
 from starrygl.data.prefetcher import HostToDevicePrefetcher
 from starrygl.nn.model.tgn import TGN 
@@ -22,7 +27,6 @@ from starrygl.nn.model.EdgePredictor import EdgePredictor
 
 # [New] 引入现有的 Wrapper
 from starrygl.nn.memory.mailbox import mailbox as Mailbox
-from starrygl.cache.NodeState import HistoryLayerUpdater, NodeState, CachedNodeState
 from starrygl.utils.params import get_config
 class TrainingEngine:
     def parse_args(self):
@@ -68,32 +72,24 @@ class TrainingEngine:
         self.num_total_nodes = sum([len(b) for b in p_book])
         
         self.partition_state = PartitionState(
-            loc_ids=self.local_ids, loc_eids=self.local_eids,
-            is_shared =  None,
-            partition_book=rep_table,
-            device=self.device
+            loc_ids = p_book[torch.distributed.get_rank()],
+            num_master_nums = self.local_ids.shape[0] ,
+            node_mode = 'map',
+            node_replica_table= rep_table,
+            loc_eids=self.local_eids,
+            num_master_edges = self.local_eids.shape[0] if self.local_eids is not None else 0,
+            edge_mode = 'map'
         )
 
-        # 3. 初始化 CPU 状态 (Wrapper)
+
         self.ctx.sync_print("Initializing CPU States (Mailbox & History)...")
         feat_context = torch.load(self.meta_dir /f"part_{self.ctx.rank}"/"distributed_context.pt", map_location='cpu')
         self.edge_feat = feat_context.get('edge_feat', None)
         dim_edge_feat = self.edge_feat.shape[1] if self.edge_feat is not None else 0
-        # A. Mailbox (CPU Pinned)
-        # 假设 Mailbox 初始化只需要 num_nodes 和 dim
         self.cfg = get_config(dataset = self.args.dataset, model = self.args.model)
-        self.mailbox = Mailbox(
-            num_nodes=len(self.local_ids),
-            mailbox_size=1, # TGN 通常只需要最新的，或者设大一点做序列
-            dim_out=self.cfg["train"]["hidden_dim"], # Message 维度通常与 Memory 一致
-            dim_edge_feat=dim_edge_feat,
-            device=self.ctx.device
-        )
-        
-        # B. History / NodeState (CPU Pinned)
         self.history_states = []
         for i in range(self.cfg["train"]["num_layers"]):
-            memory_state = NodeState(
+            memory_state = DistNodeState(
                     node_nums=len(p_book[self.ctx.rank]),
                     dim=self.cfg["train"]["hidden_dim"],
                     partition_state=self.partition_state,
@@ -103,7 +99,17 @@ class TrainingEngine:
         self.history_states_updater = HistoryLayerUpdater(self.history_states)
         
         self.node_feat_cpu = feat_context.get('node_feat', None)
-        
+        if isinstance(self.node_feat_cpu, list):
+            self.node_feat_cpu = torch.stack(self.node_feat_cpu, dim=0)
+            self.node_feat_cpu = self.node_feat_cpu.permute(1,0,2).contiguous()
+        self.graph_context = StarryglGraphContext(
+            state = self.partition_state,
+            node_feats = self.node_feat_cpu,
+            edge_feats = self.edge_feat,
+            mailbox_size=1, # TGN 通常只需要最新的，或者设大一点做序列
+            dim_out=self.cfg["train"]["hidden_dim"], # Message 维度通常与 Memory 一致
+            dim_edge_feat=dim_edge_feat
+        )
         # 4. Loader
         
         self.dataset = AtomicDataset(self.processed_dir,neg_set = self.args.neg_set)
@@ -123,9 +129,7 @@ class TrainingEngine:
             loader=self.raw_loader,
             device=self.device,
             partition_state=self.partition_state,
-            mailbox_wrapper=self.mailbox, # 传入 Wrapper
-            history_wrapper=self.history_states, # 传入 Wrapper
-            node_feat_cpu=self.node_feat_cpu
+            context=self.graph_context,
         )
     def prepare_model(self):
         self.router = CacheRouteManager.get_instance(self.ctx.group)
