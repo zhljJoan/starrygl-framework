@@ -66,17 +66,17 @@ class TGN(nn.Module):
             hidden_dim=hidden_size
         )
         
-    def memory_upd(self, dist_flag:torch.Tensor, 
+    def memory_upd(self, 
                          memory:torch.Tensor, 
                          mem_ts:torch.Tensor, 
                          mailbox:torch.Tensor, 
                          mail_ts:torch.Tensor):
         
-        time_feat = self.time_enc(mail_ts - mem_ts) if self.time_enc is not None else None
+        time_feat = self.time_enc(mail_ts.reshape(-1) - mem_ts) if self.time_enc is not None else None
         if time_feat is not None:
-            mem_input = torch.cat([mailbox, time_feat], dim=1) 
+            mem_input = torch.cat([mailbox.reshape(mailbox.shape[0], -1), time_feat], dim=1) 
         else:
-            mem_input = mailbox
+            mem_input = mailbox.reshape(mailbox.shape[0], -1)
         out_memory = self.memory_updater(mem_input, memory)
         out_ts = mail_ts
         return out_memory, out_ts
@@ -91,10 +91,12 @@ class TGN(nn.Module):
         """
         执行补偿逻辑的核心函数。
         """
+        if h_fresh.shape[0] != is_remote.shape[0]:
+            print(f"维度不匹配! h_fresh: {h_fresh.shape[0]}, is_remote: {is_remote.shape[0]}")
         if h_hist_data is None:
             return h_fresh
 
-        if isinstance(h_hist_data, (list, tuple)):
+        if isinstance(h_hist_data, tuple):
             h_hist, hist_ts = h_hist_data
         else:
             h_hist = h_hist_data   
@@ -116,66 +118,83 @@ class TGN(nn.Module):
     
     def forward(self, 
                 blocks: List[DGLBlock], 
-                x: torch.Tensor,
-                memory_data: Tuple[torch.Tensor], # (mem, mem_ts)
-                mailbox_data: Tuple[torch.Tensor],# (mailbox, mail_ts) - 从外部传入，不用再生成
-                history_data: List[Any] = None,
-                dist_flags: List[torch.Tensor] = None, 
-                nid_mapper: List[torch.Tensor] = None, #可能不要了？
+                routes: List[CacheRoute],
+                mailbox_data: Tuple[torch.Tensor, torch.Tensor] = None,
                 upd_hook: Callable = None,
                 ) -> torch.Tensor:
         
         # === 1. Memory Handling ===
         if self.memory_updater is not None:
-            m_val, m_ts = memory_data if memory_data else (None, None)
-            mail_val, mail_ts = mailbox_data if mailbox_data else (None, None)
+            with torch.no_grad():
+                x = blocks[0].x_future.wait()
+                m_val, m_ts = blocks[0].h_future.wait()
+                mail_val, mail_ts = mailbox_data.wait() if mailbox_data else (None, None)
             out_memory, out_ts = self.memory_upd(
-                dist_flags[0], m_val, m_ts, mail_val, mail_ts
+                 m_val, m_ts, mail_val, mail_ts
             )
-            if upd_hook is not None and nid_mapper is not None:
-                src_nids = nid_mapper[0] 
-                upd_hook(0, src_nids, out_memory.detach(), out_ts.detach())
+            with torch.no_grad():
+                self.last_memory = out_memory
+                self.last_ts = m_ts
+            if upd_hook is not None:
+                print(routes)
+                #新计算出来的memory更新 & 同步，放在CPU还是GPU端，会不会打断训练，异步更新的接口，需要广播？
+                upd_hook(0, out_memory, out_ts, routes[0], blocks[0].srcdata[dgl.NID])
             if self.node_feat_map is not None:
                 h_feat = self.node_feat_map(x)
                 h = out_memory + h_feat # Add (ResNet style)
             else:
                 h = out_memory
         else:
-            out_memory = None
-            out_ts = None
-            h = g[0].srcdata['x']
+            with torch.no_grad():
+                out_memory, out_ts = None, None
+                x = blocks[0].x_future.wait()
+                h = x
             if self.node_feat_map is not None:
                 h = self.node_feat_map(h)
         
         # === 2. GNN Layers ===
         for i, attention_layer in enumerate(self.attention.convs):
-            block = g[i]
-            h_prev = h
-            
-            h_hist = history_data[i] if history_data else None
-            is_remote = dist_flags[i] if dist_flags else None
-            curr_ts = block.srcdata.get('ts', m_ts if i == 0 else None)
-            if i == 0:
+            with torch.no_grad():
+                block = blocks[i]
+                h_prev = h
+                e_future = block.e_future.wait()
+                block.edata['f'] = e_future
+                h_hist = block.h_future.wait()
+                is_remote = block.is_remote
+                curr_ts = block.srcdata.get('ts', m_ts if i == 0 else None)
+            if i == 0 and self.memory_updater is not None:
                 comp_layer = self.mem_compensation
-            else:
-                comp_layer = self.gnn_compensation
-            h_input = self._apply_compensation(
+                h_input = self._apply_compensation(
+                    comp_layer=comp_layer,
+                    h_fresh=h_prev,
+                    h_hist_data=h_hist,
+                    is_remote=is_remote,
+                    current_ts=curr_ts
+                )
+            block.dstdata['x'] = h_input[block.src_indices]
+            h = attention_layer(block, h_input)       
+            if upd_hook is not None and i < len(self.attention.convs) - 1:
+                r_i = i + (self.memory_updater is not None)
+                upd_hook(r_i, h, curr_ts, routes[r_i], blocks.dstdata[dgl.NID])
+            comp_layer = self.gnn_compensation
+            with torch.no_grad():
+                next_block = blocks[i + 1] if i + 1 < len(blocks) else None
+                with torch.no_grad():
+                    if next_block is not None:
+                        h_hist_next = next_block.h_future.wait()
+                        is_remote_next = next_block.is_remote
+                    else:
+                        h_hist_next = None
+                        is_remote_next = None
+                    curr_ts = block.dstdata['ts']
+            h = self._apply_compensation(
                 comp_layer=comp_layer,
-                h_fresh=h_prev,
-                h_hist_data=h_hist,
-                is_remote=is_remote,
+                h_fresh=h,
+                h_hist_data=h_hist_next,
+                is_remote=is_remote_next,
                 current_ts=curr_ts
             )
-            block.dstdata['x'] = h_input[:block.num_dst_nodes()]
-            h = attention_layer.async_forward(block, h_input)       
-            if upd_hook is not None and i < len(self.attention.convs) - 1:
-                with torch.no_grad():
-                    dst_indices = block.dstdata['nid']
-                    global_dst_nids = nid_mapper[0][dst_indices]
-                    dst_ts = block.dstdata['ts']
-                    upd_hook(i + 1, global_dst_nids, h.detach(), dst_ts.detach())
             if i < len(self.attention.convs) - 1:
                 h = F.relu(h)
-        with torch.no_grad():
-            self.last_memory = out_memory
+
         return h

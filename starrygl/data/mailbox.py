@@ -29,10 +29,11 @@ class Mailbox:
         )
         self.mailbox_ts = torch.zeros(
             (self.num_nodes, mailbox_size), 
-            device=self.device, dtype=torch.float32,
+            device=self.device, dtype=torch.long,
             pin_memory=is_cpu
         )
         
+        self.update_stream = torch.cuda.Stream() if self.device.type == 'cuda' else None
         # 索引通常较小，根据需要选择是否 pin
         self.next_mail_pos = torch.zeros((num_nodes), dtype=torch.long, device=self.device) \
                              if _next_mail_pos is None else _next_mail_pos.to(self.device)
@@ -43,7 +44,15 @@ class Mailbox:
         self.mailbox.fill_(0)
         self.mailbox_ts.fill_(0)
         self.next_mail_pos.fill_(0)
+        
+    @property
+    def shape(self):
+        return (self.num_nodes, 
+                self.mailbox_size, 
+                2 * self.dim_out + self.dim_edge_feat)
+    
 
+    
     def move_to_gpu(self):
         """利用 pin_memory 带来的 non_blocking 特性快速搬运"""
         ctx_device = DistributedContext.get_default_context().get_device()
@@ -87,7 +96,9 @@ class DistMailbox:
         self.state = state
         self.mailbox = mailbox
         self.node_mapper = state.node_mapper
-
+    @property
+    def device(self):
+        return self.mailbox.device
     def get_mail_by_gid(self, gids: Union[Tensor, DistRouteIndex]) -> Tuple[Tensor, Tensor]:
         target_device = self.mailbox.device
         
@@ -121,3 +132,50 @@ class DistMailbox:
                 source_ts[mask], 
                 Reduce_Op=Reduce_Op
             )
+         
+    def update(self, idx:torch.Tensor|Tuple[torch.Tensor,...],
+                    efeat:torch.Tensor,
+                    upd_mem:torch.Tensor| Tuple[torch.Tensor,...], 
+                    upd_ts:torch.Tensor,
+                    Reduce_Op: str = 'max'):
+        if(isinstance(idx, tuple) and isinstance(upd_mem, tuple)):
+            idx = torch.cat(idx, dim=0)
+            num_edge = idx.shape[0] // 2
+            src_mem, dst_mem = upd_mem
+        else:
+            num_edge = idx.shape[0] // 2
+            src_mem = upd_mem[:num_edge]
+            dst_mem = upd_mem[num_edge:]
+        if efeat is None:
+            efeat = torch.zeros((idx.shape[0], 0), dtype=src_mem.dtype, device=src_mem.device)
+        src_message = torch.cat([src_mem, dst_mem, efeat.to(src_mem.device)], dim=1)
+        dst_message = torch.cat([dst_mem, src_mem, efeat.to(dst_mem.device) ], dim=1)
+        messages = torch.cat([src_message, dst_message], dim=0)
+        timestamps = torch.cat([upd_ts, upd_ts], dim=0)
+        if Reduce_Op == 'max':
+            unq_id,inv = idx.unique(return_inverse = True)
+            max_ts,id =  torch_scatter.scatter_max(timestamps.to(self.device),inv.to(self.device),dim=0)
+            timestamps = max_ts
+            messages = messages[id.to(self.device)]
+            idx = unq_id
+        self.set_mail_by_gid(
+            gids=idx,
+            source=messages,
+            source_ts=timestamps,
+            Reduce_Op=Reduce_Op
+        )
+    def generate_message_and_update(self, task, new_mem, new_mem_ts, graph_context):
+        num_src = task['task_src'].shape[0]
+        new_mem_inv = task['mem_inv_map']
+        src_mem = new_mem[new_mem_inv[:num_src]]
+        dst_mem = new_mem[new_mem_inv[num_src:2*num_src]]
+        upd_ts = task['task_ts']
+        self.update(
+            (task['task_src'],task['task_dst']),
+            efeat=graph_context.edge_feats[task['task_eid']],
+            upd_mem = (src_mem, dst_mem),
+            upd_ts=upd_ts
+        )
+    @property
+    def shape(self):
+        return self.mailbox.shape
