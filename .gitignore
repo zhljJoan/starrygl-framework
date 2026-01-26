@@ -1,0 +1,104 @@
+# ==========================================
+# 1. 编译输出与二进制文件 (C++/CUDA)
+# ==========================================
+build/
+bin/
+lib/
+dist/
+*.o
+*.obj
+*.so
+*.a
+*.lib
+*.dylib
+*.out
+*.app
+*.exe
+
+# CUDA 缓存与中间产物
+*.compute_*.h
+*.fatbin
+*.reg.c
+*.ptx
+*.cudafe1.c
+*.cudafe1.cpp
+*.cudafe1.gpu
+*.cudafe1.stub.c
+
+# ==========================================
+# 2. Python 环境与缓存
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ==========================================
+# 3. 数据集与模型权重 (防止仓库膨胀)
+# ==========================================
+# 忽略所有数据文件夹
+data/
+datasets/
+raw_data/
+processed/
+analysis/
+# 忽略常见大文件格式
+*.zip
+*.tar.gz
+*.7z
+*.rar
+*.csv
+*.tsv
+*.bin
+*.npy
+*.npz
+
+# 忽略模型权重与断点
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.weights
+
+# ==========================================
+# 4. 日志与分布式统计
+# ==========================================
+logs/
+*.log
+tensorboard/
+runs/
+dist_stats/
+wandb/
+.nfs*
+
+# ==========================================
+# 5. IDE 与系统文件
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# 6. 项目特有白名单 (例外规则)
+# ==========================================
+# 如果你想保留 data 目录下的 README
+!data/README.md
+
+# 如果你想保留一些轻量的示例配置
+!config/*.yaml
+!config/*.json
