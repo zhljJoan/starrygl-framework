@@ -3,14 +3,17 @@ import dgl
 import queue
 import threading
 from typing import Optional, Any, List, Union, Tuple
+from starrygl.data.graph_context import StarryglGraphContext
 from starrygl.data.structs import StarryBatchData
+from starrygl.utils.async_io import AsyncTransferFuture
+from starrygl.utils.partition_book import PartitionState
 
 class HostToDevicePrefetcher:
     def __init__(self, 
                  loader, 
                  device: torch.device, 
-                 partition_state, 
-                 context: Any,  
+                 partition_state: PartitionState, 
+                 context: StarryglGraphContext,  
                  queue_size: int = 3,
                  hist_cache = None):
         self.loader = loader
@@ -84,96 +87,105 @@ class HostToDevicePrefetcher:
 
         self._shutdown()
     
+
     def preload(self, batch):
+        
         if batch is None: return None
         
-        # CPU 索引阶段
+        num_layers = len(batch.layer_data)
         input_gids_cpu = batch.layer_data[-1]['gids']
         
+        # 预分配占位符
         bundle = {
             'node_feat_future': None,
             'mail_future': None,
-            'hist_futures': [],
-            'edge_futures': [],
-            'struct_event': None
+            'hist_futures': [None] * len(self.hist_cache.node_states) if self.hist_cache is not None else None, # 增加一个位置给 Input Layer
+            'edge_futures': [None] * num_layers,
+            'struct_event': None,
+            'is_remote': [None] * len(self.hist_cache.node_states) if self.hist_cache is not None else None
         }
 
         with torch.cuda.stream(self.stream):
-            # A. Node Features (UVA Prefetch)
-            if self.context.node_feats:
-                bundle['node_feat_future'] = self.context.node_feats.prefetch(
-                    input_gids_cpu, stream=self.stream
-                )
-
-            # B. Mailbox (UVA Prefetch)
-            if self.context.mailbox:
-                # 修正：loc_idx 索引直接用于切片，利用 pinned memory UVA
-                loc_idx = self.state.node_mapper.to_local(input_gids_cpu, device=torch.device('cpu'))
-                
-                # 异步拷贝到 GPU
-                mail_gpu = self.context.mailbox.mailbox.mailbox[loc_idx].to(self.device, non_blocking=True)
-                ts_gpu = self.context.mailbox.mailbox.mailbox_ts[loc_idx].to(self.device, non_blocking=True)
-                bundle['mail_future'] = (mail_gpu, ts_gpu)
-
-            # C. 逐层特征
-            pre_gids = batch.task_data['gids'] if 'gids' in batch.task_data else None
-            for i, layer in enumerate(batch.layer_data):
-                # Edge
-                if self.context.edge_feats and layer.get('eids') is not None:
-                    eids = layer['eids']
-                    ef_gpu = self.context.edge_feats.features[eids].to(self.device, non_blocking=True)
-                    bundle['edge_futures'].append(ef_gpu)
-                else:
-                    bundle['edge_futures'].append(None)
-
-                # History
-                if self.hist_cache and layer.get('gids') is not None:
-                    h_gpu = self.hist_cache.node_states[i].prefetch(pre_gids, stream=self.stream)
-                    bundle['hist_futures'].append(h_gpu)
-                    pre_gids = layer['gids']
-            if len(self.hist_cache.node_states) > len(batch.layer_data):
-                h_gpu = self.hist_cache.node_states[-1].prefetch(input_gids_cpu, stream=self.stream)
-                bundle['hist_futures'].append(h_gpu)
-            # D. 结构传输：这一步必须在所有 CPU 索引计算完成后执行
+            # 提取每一层的 eid 和用于 history 的 gids (保持在 CPU)
+            layer_eids_cpu = [layer.get('eid') for layer in batch.layer_data]
+            layer_gids_cpu = [layer.get('gids') for layer in batch.layer_data]
+            task_gids_cpu = batch.task_data.get('gids')
             batch.to(self.device, non_blocking=True)
-            
-            event = torch.cuda.Event()
-            event.record(self.stream)
+            event = torch.cuda.Event(); event.record(self.stream)
             bundle['struct_event'] = event
+            # 1. 最先发送：输入层基础特征（模型计算的第一步）
+            if self.context.node_feats:
+                nf_gpu = self.context.node_feats[input_gids_cpu].to(self.device, non_blocking=True)
+                ev = torch.cuda.Event(); ev.record(self.stream)
+                bundle['node_feat_future'] = AsyncTransferFuture(nf_gpu, ev)
+
+            if self.context.mailbox:
+                mb, mb_ts = self.context.mailbox.get_mail_by_gid(input_gids_cpu)
+                mb = mb.to(self.device, non_blocking=True)
+                mb_ts = mb_ts.to(self.device, non_blocking=True)
+                ev = torch.cuda.Event(); ev.record(self.stream)
+                bundle['mail_future'] = AsyncTransferFuture((mb, mb_ts), ev)
+            # 2. 倒序发送：从 Layer N (输入侧) 往 Layer 0 (输出侧) 发送
+            # 这样保证了 GPU 任务队列里，最先被 wait 的数据最先到达
+            for l, i in enumerate(range(num_layers - 1, -1, -1)):
+                #print(input_gids_cpu.shape , layer_gids_cpu[i].shape)
+                #layer = batch.layer_data[i]
+                curr_eid = layer_eids_cpu[i]#self.state.edge_mapper.to_local(layer_eids_cpu[i], device=torch.device('cpu'))
+                if self.context.edge_feats and curr_eid is not None:
+                    ef_gpu = self.context.edge_feats[curr_eid].to(self.device, non_blocking=True)
+                    ev = torch.cuda.Event(); ev.record(self.stream)
+                    bundle['edge_futures'][l] = AsyncTransferFuture(ef_gpu, ev)
+
+                pre_gids = layer_gids_cpu[i] if i >= 0 else task_gids_cpu
+                if self.hist_cache and pre_gids is not None:
+                    loc = self.state.node_mapper.to_local(pre_gids, device=torch.device('cpu'))
+                    h_gpu,h_ts = self.hist_cache.node_states[i][loc]
+                    h_gpu = h_gpu.to(self.device, non_blocking=True)
+                    h_ts = h_ts.to(self.device, non_blocking=True)
+                    bundle['is_remote'][l] = (~self.state.node_mapper.is_master_by_local(loc)).to(self.device, non_blocking=True)
+                    ev = torch.cuda.Event(); ev.record(self.stream)
+                    bundle['hist_futures'][l] = AsyncTransferFuture((h_gpu, h_ts), ev)
+
+            # 3. 发送最底层的初始 Node State
+            if self.hist_cache and len(self.hist_cache.node_states) > num_layers:
+                loc = self.state.node_mapper.to_local(task_gids_cpu, device=torch.device('cpu'))
+                h_gpu,h_ts = self.hist_cache.node_states[-1][loc]
+                h_gpu = h_gpu.to(self.device, non_blocking=True)
+                h_ts = h_ts.to(self.device, non_blocking=True)
+                ev = torch.cuda.Event(); ev.record(self.stream)
+                bundle['hist_futures'][-1] = AsyncTransferFuture((h_gpu, h_ts), ev)
+
 
         return bundle
 
     def assemble(self, batch, bundle) -> StarryBatchData:
         if batch is None: return None
         
-        # 等待数据/结构流同步
+        # 仅等待结构，不阻塞计算流
         if bundle['struct_event']:
-            bundle['struct_event'].wait()
-
+            torch.cuda.current_stream().wait_event(bundle['struct_event'])
         mfgs = batch.blocks
+        num_blocks = len(mfgs)
         
-        if bundle['node_feat_future'] is not None:
-            # 如果 node_feat_future 是 tuple (feat, ts)，取第一个
-            data = bundle['node_feat_future']
-            mfgs[0].srcdata['x'] = data[0] if isinstance(data, tuple) else data
+        for i in range(num_blocks):
+            # 注入 Future，不调用 wait()
+            if i < len(bundle['edge_futures']):
+                mfgs[i].e_future = bundle['edge_futures'][i]
+            
+            if i < len(bundle['hist_futures']):
+                mfgs[i].h_future = bundle['hist_futures'][i]
+                mfgs[i].is_remote = bundle['is_remote'][i]
 
-        # 修正引用：is_master_by_gid 应通过 context 或 state 调用
-        input_gids_gpu = mfgs[0].srcdata[dgl.NID]
-        # 优化：通过 PartitionState 直接判断是否为本地 Master
-        is_remote = ~self.state.node_mapper.is_master_by_local(
-                        self.state.node_mapper.to_local(input_gids_gpu, device=self.device)
-                    )
-
-        task = batch.task_data
-        pos = (task.get('task_src'), task.get('task_dst'), task.get('ts')) if 'task_src' in task \
-              else (task.get('task_node'), task.get('ts'))
-
+        if bundle['node_feat_future']:
+            mfgs[0].x_future = bundle['node_feat_future']
+        #print(batch.comm_plans, batch.comm_plans[:len(bundle['hist_futures'])], batch.comm_plans[:len(bundle['hist_futures'])].reverse())
+        comm_plan = batch.comm_plans[:len(bundle['hist_futures'])]
+        comm_plan.reverse()
         return StarryBatchData(
             mfgs=mfgs,
-            dist_flag=is_remote,
-            history=bundle['hist_futures'],
-            mailbox=bundle['mail_future'],
-            nid_mapper=batch.layer_data[-1]['gids'], # 保留原始 GID 以便反查
-            roots=(pos, task.get('neg_pool')),
-            routes=batch.comm_plans
+            history = None,
+            mailbox = bundle['mail_future'],
+            nid_mapper=None,
+            roots=batch.task_data,
+            routes=comm_plan
         )

@@ -68,6 +68,44 @@ class TransfomerAttentionLayer(AsyncModule):
 
         return x, route, route_first
     
+    def forward(self,
+                    g:DGLGraph, 
+                    x: Tensor | None = None,
+                 ) -> Tensor:
+        
+        with g.local_scope():
+            if self.dim_time > 0:
+                src_time_feat = self.time_enc(g.edata['dt'])
+                dst_time_feat = self.time_enc(torch.zeros(g.num_dst_nodes(), dtype=torch.float32, device=g.device))
+            else:
+                src_time_feat = torch.empty((g.num_edges(), 0), self.dim_time, device=g.device)
+                dst_time_feat = torch.empty((g.num_dst_nodes(), 0), self.dim_time, device=g.device)
+            if 'f' not in g.edata and self.dim_edge_feat > 0:
+                edge_feat = torch.empty(g.num_edges(), self.dim_edge_feat, device=g.device)
+            
+            inputs = torch.cat((x[g.adj_tensors('csc')[1]],g.edata['f'], src_time_feat), dim=1) if x is not None else torch.cat((edge_feat, src_time_feat), dim=1)
+            query = torch.cat((g.dstdata['x'], dst_time_feat), dim=1) if x is not None else dst_time_feat
+            Q = self.w_q(query) if self.dim_node_feat + self.dim_time > 0 else torch.ones((g.num_dst_nodes(), self.dim_out), device=g.device)
+            K = self.w_k(inputs)
+            V = self.w_v(inputs)
+            Q = torch.reshape(Q, (Q.shape[0], self.num_head, -1))
+            K = torch.reshape(K, (K.shape[0], self.num_head, -1))
+            V = torch.reshape(V, (V.shape[0], self.num_head, -1))
+            _, dst_idx = g.edges()
+            score = torch.sum(Q[dst_idx] * K, dim=2) / (self.dim_out // self.num_head) ** 0.5
+            att = dgl.ops.edge_softmax(g, self.att_act(score))
+            att = self.att_dropout(att)
+            V = torch.reshape(V*att[:, :, None], (V.shape[0], -1))
+            g.edata['v'] = V
+            g.update_all(dgl.function.copy_e('v', 'm'), dgl.function.sum('m', 'h'))
+            if self.dim_node_feat != 0:
+                rst = torch.cat([g.dstdata['h'], g.dstdata['x']], dim=1)
+            else:
+                rst = g.dstdata['h']
+            rst = self.w_out(rst)
+            rst = torch.nn.functional.relu(self.dropout(rst))
+        return self.layer_norm(rst)
+    
     async def async_forward(self,
                     g:DGLGraph, 
                     x: Tensor | None = None,
@@ -159,4 +197,14 @@ class GraphAttention(AsyncModule):
                 x = F.relu(x)
                 r = route
                 x = await conv.async_forward(g, x, route=r)
+        return x
+    
+    def forward(self, g: DGLGraph, x: Tensor | None = None) -> Tensor:
+        for i, conv in enumerate(self.convs):
+            conv = cast(TransfomerAttentionLayer, conv)
+            if i == 0:
+                x = conv.forward(g, x)
+            else:
+                x = F.relu(x)
+                x = conv.forward(g, x)
         return x

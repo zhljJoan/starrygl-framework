@@ -14,12 +14,10 @@ class StarryBatchData:
     history: List[Optional[Tuple[torch.Tensor, torch.Tensor]]] # [Layer] list of (Embedding, Time)
     mailbox: Optional[List[torch.Tensor]] # [Feature, Time] 对应 Layer 0 的输入节点
     
-    # 3. 辅助信息
-    dist_flag: List[torch.Tensor]         # [Layer] Bool Mask, True 表示是远程节点(Halo)
     nid_mapper: torch.Tensor              # Layer 0 输入节点的 Global ID
     
     # 4. 任务目标
-    roots: Tuple[torch.Tensor, torch.Tensor] # (Positive Roots, Negative Roots) 或者是 Node IDs
+    roots: dict # (Positive Roots, Negative Roots) 或者是 Node IDs
     
     # 5. 通信路由 (新架构核心)
     routes: List[Any] = None              # 每一层的 CommPlan，用于模型内同步

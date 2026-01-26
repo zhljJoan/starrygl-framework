@@ -20,7 +20,12 @@ class mailbox:
         self.update_mail_pos = _update_mail_pos
         self.device = torch.device('cpu')
         
-        
+    @property
+    def shape(self):
+        return (self.num_nodes, 
+                self.mailbox_size, 
+                2 * self.dim_out + self.dim_edge_feat)
+    
     def reset(self):
         self.mailbox.fill_(0)
         self.mailbox_ts.fill_(0)
@@ -86,3 +91,9 @@ class mailbox:
 
     def get_message(self, idx):
         return self.mailbox[idx], self.mailbox_ts[idx]
+    
+    @property
+    def shape(self):
+        return (self.num_nodes, 
+                self.mailbox_size, 
+                2 * self.dim_out + self.dim_edge_feat)

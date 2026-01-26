@@ -2,6 +2,7 @@ import torch
 from torch import Tensor
 from typing import List, Optional, Union, Tuple
 
+from starrygl.cache.cache_route import CacheRouteManager, CommPlan
 from starrygl.utils.partition_book import DistRouteIndex, PartitionState
 
 class DistNodeState:
@@ -56,7 +57,7 @@ class DistNodeState:
         self.data[target_idx] = values[mask].to(self.device, non_blocking=True)
         
         if ts is not None:
-            ts_to_update = ts[mask].to(self.device, non_blocking=True)
+            ts_to_update = ts[mask].to(self.device, self.ts.dtype,non_blocking=True)
             self.ts[target_idx] = ts_to_update.squeeze() if ts_to_update.dim() > 1 else ts_to_update
 
     def to(self, device: Union[str, torch.device]):
@@ -79,6 +80,8 @@ class DistNodeState:
                 loc_idx = self.state.node_mapper.to_local(gids, device=torch.device('cpu'))
                 return self.data[loc_idx].cuda(non_blocking=True), self.ts[loc_idx].cuda(non_blocking=True)
         return self[gids]
+    
+
     # 兼容接口：Broadcast 现在等同于 Update (通信由外部 Router 控制)
 #    def broadcast(self, node_ids, values, ts):
 #        self.update(node_ids, values, ts)
@@ -227,9 +230,10 @@ class HistoryLayerUpdater:
     """
     辅助类：用于管理多层 History 的更新。
     """
+    
     def __init__(self, node_states: List[DistNodeState]):
         self.node_states = node_states
-
+        self.task = None
     def update(self, layer_idx: int, nids: torch.Tensor, feats: torch.Tensor, ts: torch.Tensor):
         if layer_idx < len(self.node_states):
             self.node_states[layer_idx].update(nids, feats, ts)
@@ -237,3 +241,41 @@ class HistoryLayerUpdater:
     # 兼容旧接口
     def __call__(self, layer_idx, nids, feats, ts):
         self.update(layer_idx, nids, feats, ts)
+    
+    def update_embedding_and_broadcast(self, 
+                                       layer_idx: int,
+                                       updated_emb: torch.Tensor, 
+                                       updated_ts: torch.Tensor, 
+                                       plan: CommPlan,
+                                       indices: torch.Tensor) -> List[torch.futures.Future]:
+        """
+        1. 更新本地存储 (Local Write)
+        2. 根据通信计划，将更新异步发送给外部分区 (Global Broadcast)
+        """
+        assert layer_idx < len(self.node_states), "Layer index out of range"
+        if self.task is not None:
+            self.task.wait()
+            
+        if plan is None or plan.is_empty():
+            return []
+
+        if updated_ts.dim() == 1:
+            updated_ts = updated_ts.unsqueeze(-1)
+        
+        combined_features = torch.cat([updated_emb, updated_ts], dim=-1)
+        self.node_states[layer_idx].update(indices, updated_emb, updated_ts)
+        def remote_write_callback(recv_indices, recv_data, mode):
+            remote_emb = recv_data[:, :-1]
+            remote_ts = recv_data[:, -1]
+            target_state = self.node_states[layer_idx]
+            target_state.data[recv_indices] = remote_emb.to(target_state.device, non_blocking=True)
+            target_state.ts[recv_indices] = remote_ts.to(target_state.device, non_blocking=True)
+        manager = CacheRouteManager.get_instance()
+        futures = manager.update_with_plan(
+            local_features=combined_features,
+            plan=plan,
+            write_callback=remote_write_callback
+        )
+        self.task = futures
+        return futures
+        
