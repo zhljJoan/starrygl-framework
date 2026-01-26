@@ -12,7 +12,7 @@ class EdgePredictor(torch.nn.Module):
                 neg_samples=1,mode='triplet'):
         h_pos_src = self.src_fc(h_pos_src)
         h_pos_dst = self.dst_fc(h_pos_dst)
-        h_neg_dst = self.dst_fc(h_neg_dst)
+        h_neg_dst = self.dst_fc(h_neg_dst.reshape(-1, self.dim_in))
         if mode == 'triplet':
             h_pos_edge = torch.nn.functional.relu(h_pos_src + h_pos_dst)
             

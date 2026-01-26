@@ -249,6 +249,7 @@ class CacheRoute:
 
         # 5. 发送特征 (Features)
         if slice_size <= 0 or slice_size >= local_features.shape[1]:
+            print(local_features.shape, plan.send_indices.max().item())
             packed_feats = local_features[plan.send_indices] # Gather
             work_f = dist.all_to_all_single(
                 recv_feats, packed_feats,

@@ -78,7 +78,7 @@ class IDMapper:
         self._g2l_map: Optional[Tensor] = None
         if mode == 'map':
             self.build_g2l_map()
-
+        print('{} {} {}'.format(self._num_master,self.loc_ids, self._g2l_map[self.loc_ids]))
     @property
     def loc_nums(self):
         return self.loc_ids.size(0)
@@ -160,6 +160,13 @@ class IDMapper:
     def is_master_by_local(self, local_idx: Tensor) -> Tensor:
         return (local_idx >= 0) & (local_idx < self._num_master)
     
+    def is_remote_ids(self, global_idx: Tensor) -> Tensor:
+        if self.mode == 'identity':
+            local_idx = global_idx
+        else:
+            local_idx = self.to_local(global_idx, device=global_idx.device)
+        return (local_idx < 0) | (local_idx >= self._num_master)
+    
     def is_store_local(self, global_idx: Tensor) -> Tensor:
         if self.mode == 'identity':
             local_idx = global_idx
@@ -201,6 +208,7 @@ class PartitionState:
         
         # --- 组合模式: 实例化 Edge Mapper (按需) ---
         self.edge_mapper = None
+
         if loc_eids is not None:
             self.edge_mapper = IDMapper(
                 loc_ids=loc_eids,
