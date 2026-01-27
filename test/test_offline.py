@@ -100,12 +100,14 @@ class TrainingEngine:
                     dim=self.cfg["train"]["hidden_dim"],
                 )
             self.history_states.append(memory_state)
-        if self.cfg['train']['memory_type'] is None:
+        if self.cfg['train']['memory_type'] is not None:
             memory_state = DistNodeState(
                 state = self.partition_state,
                 dim=self.cfg["train"]["hidden_dim"],
             )
             self.history_states.append(memory_state)
+        else:
+            self.history_states.append(None)
         self.history_states_updater = HistoryLayerUpdater(self.history_states)
         
         self.node_feat_cpu = feat_context.get('node_feat', None)

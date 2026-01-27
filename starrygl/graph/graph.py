@@ -92,7 +92,7 @@ class pyGraph:
             if 'layers' not in policy:
                 raise ValueError("policy must contain 'layers' for non-c sampling")
             
-            print('{} {} {} {} {}\n'.format(time_start, time_end, chunk_list, test_generate_samples, test_generate_samples_ts))
+            #print('{} {} {} {} {}\n'.format(time_start, time_end, chunk_list, test_generate_samples, test_generate_samples_ts))
             #print(time_start, time_end, chunk_list, test_generate_samples, test_generate_samples_ts)
             return self.g.submit_query(
                 time_start, time_end, chunk_list.to(ctx.device), test_generate_samples.to(ctx.device), test_generate_samples_ts.to(ctx.device),
