@@ -127,7 +127,7 @@ class TGN(nn.Module):
         if self.memory_updater is not None:
             with torch.no_grad():
                 x = blocks[0].x_future.wait()
-                m_val, m_ts = blocks[0].h_future.wait()
+                m_val, m_ts = blocks[0].h_future_mem.wait()
                 mail_val, mail_ts = mailbox_data.wait() if mailbox_data else (None, None)
             out_memory, out_ts = self.memory_upd(
                  m_val, m_ts, mail_val, mail_ts
@@ -135,10 +135,11 @@ class TGN(nn.Module):
             with torch.no_grad():
                 self.last_memory = out_memory
                 self.last_ts = m_ts
-            if upd_hook is not None:
-                print(routes)
-                #新计算出来的memory更新 & 同步，放在CPU还是GPU端，会不会打断训练，异步更新的接口，需要广播？
-                upd_hook(0, out_memory, out_ts, routes[0], blocks[0].srcdata[dgl.NID])
+                h_mem_hist = blocks[0].h_future_mem.wait()
+                is_mem_remote = blocks[0].is_remote_mem
+                if upd_hook is not None:
+                    #新计算出来的memory更新 & 同步，放在CPU还是GPU端，会不会打断训练，异步更新的接口，需要广播？
+                    upd_hook(0, out_memory.detach(), out_ts, routes[0], blocks[0].srcdata[dgl.NID])
             if self.node_feat_map is not None:
                 h_feat = self.node_feat_map(x)
                 h = out_memory + h_feat # Add (ResNet style)
@@ -159,34 +160,30 @@ class TGN(nn.Module):
                 h_prev = h
                 e_future = block.e_future.wait()
                 block.edata['f'] = e_future
-                h_hist = block.h_future.wait()
-                is_remote = block.is_remote
                 curr_ts = block.srcdata.get('ts', m_ts if i == 0 else None)
             if i == 0 and self.memory_updater is not None:
                 comp_layer = self.mem_compensation
                 h_input = self._apply_compensation(
                     comp_layer=comp_layer,
                     h_fresh=h_prev,
-                    h_hist_data=h_hist,
-                    is_remote=is_remote,
+                    h_hist_data=h_mem_hist,
+                    is_remote=is_mem_remote,
                     current_ts=curr_ts
                 )
             block.dstdata['x'] = h_input[block.src_indices]
-            h = attention_layer(block, h_input)       
-            if upd_hook is not None and i < len(self.attention.convs) - 1:
-                r_i = i + (self.memory_updater is not None)
-                upd_hook(r_i, h, curr_ts, routes[r_i], blocks.dstdata[dgl.NID])
-            comp_layer = self.gnn_compensation
+            h = attention_layer(block, h_input)      
+            #print('block dstdata {} h shape {} block ts {}\n'.format(block.dstdata['x'].shape, h.shape, block.dstdata['ts'].shape)) 
             with torch.no_grad():
+                if upd_hook is not None and i < len(self.attention.convs) - 1:
+                    r_i = i + 1
+                    upd_hook(r_i, h.detach(), block.dstdata['ts'], routes[r_i], block.dstdata[dgl.NID])
+                comp_layer = self.gnn_compensation
+            
                 next_block = blocks[i + 1] if i + 1 < len(blocks) else None
-                with torch.no_grad():
-                    if next_block is not None:
-                        h_hist_next = next_block.h_future.wait()
-                        is_remote_next = next_block.is_remote
-                    else:
-                        h_hist_next = None
-                        is_remote_next = None
-                    curr_ts = block.dstdata['ts']
+                h_hist_next = block.h_future.wait()
+                is_remote_next = block.is_remote
+                curr_ts = block.dstdata['ts']
+            #print('apply compensation at layer {} {} {} {} {} {}'.format(i, block.src_indices.shape, h.shape, h_hist_next[0].shape, h_hist_next[1].shape, is_remote_next.shape, curr_ts.shape))
             h = self._apply_compensation(
                 comp_layer=comp_layer,
                 h_fresh=h,
