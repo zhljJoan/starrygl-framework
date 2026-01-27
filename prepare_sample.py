@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import gc
 from typing import Dict, List, Tuple, Optional, Union
+
+import torch_scatter
 os.environ["NUMBA_NUM_THREADS"] = "32"
 # [Fix 1] 自动添加项目根目录到环境变量，解决 ModuleNotFoundError
 current_file = Path(__file__).resolve()
@@ -259,7 +261,7 @@ class MaterializedMultiLayerBuilder:
             int(fanout), int(s_type), int(g_type),
             int(meta_config.get('start_offset', 0)), int(meta_config.get('end_offset', 0)), int(cid)
         )
-    def _compute_layer_route(self, layer_nodes):
+    def _compute_layer_route(self, layer_nodes, layer_ts):
         """
         Compute route for a specific layer's nodes.
         layer_nodes: Global IDs of nodes needed at this layer.
@@ -268,25 +270,30 @@ class MaterializedMultiLayerBuilder:
             return None
             
         u_nodes = torch.from_numpy(layer_nodes) if isinstance(layer_nodes, np.ndarray) else layer_nodes
-        owners = self.node_parts[u_nodes]
-        my_nodes = u_nodes[owners == self.pid] # Nodes I own in this layer
-        
-        if len(my_nodes) == 0:
+        u_ts = torch.from_numpy(layer_ts) if isinstance(layer_ts, np.ndarray) else layer_ts
+        unique_gids, inverse_indices = torch.unique(u_nodes, return_inverse=True) 
+        max_ts_val, argmax_indices = torch_scatter.scatter_max(u_ts, inverse_indices, dim=0)
+        owners = self.node_parts[unique_gids]
+        master_mask = (owners == self.pid)
+        query_gids = unique_gids[master_mask]
+        query_original_indices = argmax_indices[master_mask]
+        if len(query_gids) == 0:
             return None
             
         # Lookup: Who needs my nodes?
-        q_idx, q_ranks, q_remote_locs = self.rep_table.lookup(my_nodes)
-        
-        if len(q_ranks) == 0:
+        src_indices_in_query, target_ranks, target_locs = self.rep_table.lookup(query_gids)
+        owner_filter = target_ranks != self.pid
+        src_indices_in_query = src_indices_in_query[owner_filter]
+        target_ranks = target_ranks[owner_filter]
+        target_locs = target_locs[owner_filter]
+        if len(target_ranks) == 0:
             return None
-            
-        s_gids = my_nodes[q_idx]
-        s_local = s_gids#应该是每个批次计算了就广播 #self.local_map[s_gids] # My local cache index
         
-        sort_idx = torch.argsort(q_ranks)
-        final_ranks = q_ranks[sort_idx]
-        final_local = s_local[sort_idx]
-        final_remote = q_remote_locs[sort_idx]
+        final_local_indices = query_original_indices[src_indices_in_query]
+        sort_idx = torch.argsort(target_ranks)
+        final_ranks = target_ranks[sort_idx]
+        final_local = final_local_indices[sort_idx]
+        final_remote = target_locs[sort_idx]
         
         
         u_ranks, counts = torch.unique(final_ranks, return_counts=True)
@@ -328,7 +335,7 @@ class MaterializedMultiLayerBuilder:
         curr_uid, curr_uts, l0_inv = self._get_unique_pairs(l0_nodes, l0_ts)
         batch_data = [{"gids": curr_uid, "ts": curr_uts, "inv_map": l0_inv, "num_neg": num_neg}]
         layer_routes = []
-        r0 = self._compute_layer_route(curr_uid)
+        r0 = self._compute_layer_route(curr_uid, curr_uts)
         layer_routes.append(r0)
         # Step C: Multi-hop Sampling
         last_inv_map = None
@@ -363,7 +370,7 @@ class MaterializedMultiLayerBuilder:
             })
             if l < len(layer_configs['layer']):
                 # 计算下一层的路由
-                r_next = self._compute_layer_route(next_uid)
+                r_next = self._compute_layer_route(next_uid, next_uts)
                 layer_routes.append(r_next)
             curr_uid, curr_uts, last_inv_map = next_uid, next_uts, next_inv
         ##print(layer_routes)

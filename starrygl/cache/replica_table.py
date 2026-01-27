@@ -212,4 +212,5 @@ def build_replica_table(num_nodes, partition_book, num_parts, type = None):
         indices=indices,
         locs=locs
     )
+    
 

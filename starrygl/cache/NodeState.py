@@ -254,7 +254,8 @@ class HistoryLayerUpdater:
         """
         assert layer_idx < len(self.node_states), "Layer index out of range"
         if self.task is not None:
-            self.task.wait()
+            for t in self.task:
+                t.wait()
             
         if plan is None or plan.is_empty():
             return []
@@ -262,6 +263,7 @@ class HistoryLayerUpdater:
         if updated_ts.dim() == 1:
             updated_ts = updated_ts.unsqueeze(-1)
         
+        #print(updated_emb.shape, updated_ts.shape, plan)
         combined_features = torch.cat([updated_emb, updated_ts], dim=-1)
         self.node_states[layer_idx].update(indices, updated_emb, updated_ts)
         def remote_write_callback(recv_indices, recv_data, mode):
