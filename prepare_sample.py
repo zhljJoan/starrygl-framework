@@ -221,6 +221,8 @@ class MaterializedMultiLayerBuilder:
         indptr = np.zeros(num_dst_nodes + 1, dtype=np.int64)
         u, c = np.unique(s_dst, return_counts=True)
         valid_mask = u < num_dst_nodes
+        if(valid_mask.sum() != len(u)):
+            print("Warning: Some destination nodes are out of bounds in _build_csc_from_pairs.")
         indptr[u[valid_mask]+1] = c[valid_mask]
         np.cumsum(indptr, out=indptr)
         
@@ -348,10 +350,10 @@ class MaterializedMultiLayerBuilder:
             )
             
             if raw_src is None:
-                curr_uid = np.array([], dtype=curr_uid.dtype)
-                curr_uts = np.array([], dtype=curr_uts.dtype)
+                #curr_uid = np.array([], dtype=curr_uid.dtype)
+                #curr_uts = np.array([], dtype=curr_uts.dtype)
                 batch_data.append({
-                    "indptr": np.zeros(1, dtype=np.int64), "indices": np.array([], dtype=np.int64),
+                    "indptr": np.zeros(curr_uid.shape[0]+1, dtype=np.int64), "indices": np.array([], dtype=np.int64),
                     "eid": np.array([], dtype=np.int64), "edge_ts": np.array([], dtype=curr_uts.dtype),
                     "edge_dt": np.array([], dtype=np.float32), "gids": curr_uid, "ts": curr_uts
                 })
@@ -363,7 +365,10 @@ class MaterializedMultiLayerBuilder:
             ptr, idx, b_ts, b_dt, b_eid = self._build_csc_from_pairs(
                 next_inv, raw_dst_mapped, raw_ts, raw_dt, raw_eid, curr_uid.shape[0]
             )
-   
+            if(ptr.shape[0] != curr_uid.shape[0] + 1 or ptr.shape[0] != batch_data[-1]['gids'].shape[0] + 1):
+                print("Error: Indptr size mismatch in layer {}".format(l))
+                print("Expected size: {}, Actual size: {}".format(curr_uid.shape[0] + 1, ptr.shape[0]))
+                raise ValueError("Indptr size mismatch.")
             batch_data.append({
                 "indptr": ptr, "indices": idx, "eid": b_eid, "edge_ts": b_ts,
                 "edge_dt": b_dt, "gids": next_uid, "ts": next_uts
