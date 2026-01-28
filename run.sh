@@ -2,7 +2,7 @@
 set -e
 source ~/.miniconda3/bin/activate tgnn_3.10
 
-export OMP_NUM_THREADS=24
+export OMP_NUM_THREADS=8
 
 MODEL_CHOICES=("mpnn_lstm")
 DATA_CHOICES=("WIKI")

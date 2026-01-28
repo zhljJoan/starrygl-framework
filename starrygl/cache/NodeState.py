@@ -17,7 +17,8 @@ class DistNodeState:
                  state: PartitionState, 
                  dim: int, 
                  device: Union[str, torch.device] = 'cpu',
-                 pinned: bool = True):
+                 pinned: bool = True,
+                 buffer_size = 1000000):
         self.state = state
         self.node_mapper = state.node_mapper
         self.loc_nums = self.node_mapper.loc_nums
@@ -29,9 +30,18 @@ class DistNodeState:
         self.data = torch.zeros(self.loc_nums, dim, dtype=torch.float32, device=self.device)
         self.ts = torch.zeros(self.loc_nums, dtype=torch.float32, device=self.device)
 
-        if pinned and self.device.type == 'cpu':
+
+        self.use_pinned = (pinned and self.device.type == 'cpu')
+        if self.use_pinned:
+            print('NodeState: Pinned Memory Enabled')
             self.data = self.data.pin_memory()
             self.ts = self.ts.pin_memory()
+            
+            # [新增] 预分配 Pinned Buffer，用于 gather 操作
+            # 大小根据你的 max_batch_size * fanout 估算，不够时动态扩容
+            self.buffer_size = buffer_size
+            self.data_buffer = torch.zeros(buffer_size, dim, dtype=torch.float32).pin_memory()
+            self.ts_buffer = torch.zeros(buffer_size, dtype=torch.float32).pin_memory()
 
     def __getitem__(self, key: Union[Tensor, DistRouteIndex]) -> Tuple[Tensor, Tensor]:
         """
@@ -74,13 +84,41 @@ class DistNodeState:
         self.data.fill_(0)
         self.ts.fill_(0)
 
-    def prefetch(self, gids: Tensor, stream: Optional[torch.cuda.Stream] = None):
-        if self.data.device.type == 'cpu':
+    def prefetch(self, gids: Tensor, stream: Optional[torch.cuda.Stream] = None, device: Optional[torch.device] = None) -> Tuple[Tensor, Tensor]:
+        """
+        Pinned Memory 优化版 Prefetch
+        """
+        if self.device.type == 'cpu' and self.use_pinned:
+            loc_idx = self.state.node_mapper.to_local(gids, device=torch.device('cpu'))
+            num_nodes = loc_idx.size(0)
+            
+            if num_nodes > self.data_buffer.size(0):
+                new_size = int(num_nodes * 1.5)
+                self.data_buffer = torch.zeros(new_size, self.dim, dtype=torch.float32).pin_memory()
+                self.ts_buffer = torch.zeros(new_size, dtype=torch.float32).pin_memory()
+
+            torch.index_select(self.data, 0, loc_idx, out=self.data_buffer[:num_nodes])
+            torch.index_select(self.ts, 0, loc_idx, out=self.ts_buffer[:num_nodes])
+            
+            with torch.cuda.stream(stream):
+                data_gpu = self.data_buffer[:num_nodes].to(device if device is not None else torch.device('cuda'), non_blocking=True)
+                ts_gpu = self.ts_buffer[:num_nodes].to(device if device is not None else torch.device('cuda'), non_blocking=True)
+                
+            return data_gpu, ts_gpu
+            
+        elif self.device.type == 'cpu':
             with torch.cuda.stream(stream):
                 loc_idx = self.state.node_mapper.to_local(gids, device=torch.device('cpu'))
-                return self.data[loc_idx].cuda(non_blocking=True), self.ts[loc_idx].cuda(non_blocking=True)
-        return self[gids]
+                return self.data[loc_idx].to(device if device is not None else torch.device('cuda'), non_blocking=True), \
+                          self.ts[loc_idx].to(device if device is not None else torch.device('cuda'), non_blocking=True)
+        else:
+            # 数据已经在 GPU 上，直接索引
+            return self[gids]
     
+    def reset(self):
+        """重置所有状态"""
+        self.data.fill_(0)
+        self.ts.fill_(0)
 
     # 兼容接口：Broadcast 现在等同于 Update (通信由外部 Router 控制)
 #    def broadcast(self, node_ids, values, ts):
@@ -242,6 +280,13 @@ class HistoryLayerUpdater:
     def __call__(self, layer_idx, nids, feats, ts):
         self.update(layer_idx, nids, feats, ts)
     
+    def reset(self):
+        if self.task is not None:
+            for t in self.task:
+                t.wait()
+        for state in self.node_states:
+            state.reset()
+            
     def update_embedding_and_broadcast(self, 
                                        layer_idx: int,
                                        updated_emb: torch.Tensor, 
@@ -256,6 +301,7 @@ class HistoryLayerUpdater:
         if self.task is not None:
             for t in self.task:
                 t.wait()
+            self.task = None
             
         if plan is None or plan.is_empty():
             return []
