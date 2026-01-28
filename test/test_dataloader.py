@@ -1,4 +1,6 @@
 import os
+s.environ["NUMBA_NUM_THREADS"] = "1"
+os.environ["OMP_NUM_THREADS"] = "1"
 import sys
 import argparse
 import time
@@ -232,6 +234,7 @@ class TrainingEngine:
         return total_loss
 
     def run(self):
+        print('epoch is {}'.format(self.args.epochs))
         for ep in range(self.args.epochs):
             self.train_epoch()
             # 可以在这里做 Checkpoint
