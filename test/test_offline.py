@@ -175,9 +175,9 @@ class TrainingEngine:
         
         total_loss = 0
         aps, aucs = [], []
+        print(f"Running epoch step in {mode} mode...")
         for step, batch in enumerate(loader):
             if batch is None: continue
-            
             with torch.set_grad_enabled(mode == 'train'):
                 h = self.model(
                     blocks=batch.mfgs, routes=batch.routes, mailbox_data=batch.mailbox,
@@ -201,7 +201,6 @@ class TrainingEngine:
                     torch.cat([pos_out, neg_out]),
                     torch.cat([torch.ones_like(pos_out), torch.zeros_like(neg_out)])
                 )
-
             if mode == 'train':
                 self.optimizer.zero_grad()
                 loss.backward()
