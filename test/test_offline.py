@@ -21,7 +21,7 @@ from starrygl.utils.partition_book import PartitionState
 from starrygl.data.batches import AtomicDataset, SlotAwareSampler, collate_and_merge
 from starrygl.utils import DistributedContext, time_counter
 from starrygl.cache.cache_route import CacheRouteManager
-from starrygl.data.prefetcher import HostToDevicePrefetcher
+from starrygl.data.prefetcher import HostToDevicePrefetcher, ThreadedPrefetcher
 from starrygl.nn.model.tgn import TGN 
 from starrygl.nn.model.EdgePredictor import EdgePredictor
 from starrygl.utils.params import get_config
@@ -132,12 +132,14 @@ class TrainingEngine:
         
         raw_loader = DataLoader(
             subset, batch_size=self.args.batch_slots, sampler=sampler,
-            collate_fn=my_collate, num_workers=4, prefetch_factor=2, persistent_workers=True
+            collate_fn=my_collate, num_workers=4, prefetch_factor=2, persistent_workers=True,
+            pin_memory=True
         )
-        return HostToDevicePrefetcher(
+        original_prefetcher = HostToDevicePrefetcher(
             loader=raw_loader, device=self.device, partition_state=self.partition_state,
             context=self.graph_context, hist_cache=self.history_states_updater
         )
+        return ThreadedPrefetcher(original_prefetcher)
 
     def prepare_model(self):
         mail_input = math.prod(self.graph_context.mailbox.shape[1:]) + self.cfg["train"]["dim_time"]

@@ -164,6 +164,13 @@ class CommPlan:
             send_indices=torch.empty(0, dtype=torch.long),
             send_remote_indices=torch.empty(0, dtype=torch.long)
         )
+        
+    def pin_memory(self):
+        self.send_ranks = self.send_ranks.pin_memory()
+        self.send_sizes = self.send_sizes.pin_memory()
+        self.send_indices = self.send_indices.pin_memory()
+        self.send_remote_indices = self.send_remote_indices.pin_memory()
+        return self
 
 # =============================================================================
 # 2. 异步句柄 (Future)
