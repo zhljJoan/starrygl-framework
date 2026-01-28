@@ -120,7 +120,7 @@ class TrainingEngine:
 
     def _create_loader(self, indices:slice):
         #if len(indices) == 0: return None
-        subset = self.full_dataset.subset(indices)
+        subset = self.full_dataset#.subset(indices)
         sampler = SlotAwareSampler(subset) # Compatible with Subset? Usually Subset changes indexing.
         # Check: SlotAwareSampler expects dataset to have __len__. Subset has it.
         # But indices inside Subset are remapped. 
@@ -223,15 +223,16 @@ class TrainingEngine:
                 aps.append(average_precision_score(y_true, y_pred))
                 try: aucs.append(roc_auc_score(y_true, y_pred))
                 except: pass
-
+            if step % 20 == 0 and self.ctx.rank == 0:
+                print(f"Step {step} | Loss: {loss.item():.4f}")
         return total_loss/(step+1), sum(aps)/len(aps) if aps else 0, sum(aucs)/len(aucs) if aucs else 0
 
     def run(self):
         # Create loaders lazily or upfront
         print('rank{} train_idx {} val_idx {} test_idx {}'.format(self.ctx.rank, self.train_idx, self.val_idx, self.test_idx))
         train_loader = self._create_loader(self.train_idx)
-        val_loader = self._create_loader(self.val_idx)
-        test_loader = self._create_loader(self.test_idx)
+        #val_loader = self._create_loader(self.val_idx)
+        #test_loader = self._create_loader(self.test_idx)
         
         for ep in range(self.args.epochs):
             start = time_counter.time_count.start()
@@ -243,11 +244,10 @@ class TrainingEngine:
             
             # 2. Train
             t_loss, t_ap, t_auc = self.run_epoch_step(train_loader, mode='train')
-            
+            end = time_counter.time_count.elapsed_event(start)
             # 3. Val (Continue state from Train)
             v_loss, v_ap, v_auc = self.run_epoch_step(val_loader, mode='eval')
             
-            end = time_counter.time_count.elapsed_event(start)
             if self.ctx.rank == 0:
                 print(f"Ep {ep} | T: {end:.2f}s | Train L:{t_loss:.4f} AP:{t_ap:.4f} | Val L:{v_loss:.4f} AP:{v_ap:.4f}")
 
