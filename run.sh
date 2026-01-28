@@ -17,7 +17,7 @@ for model in "${MODEL_CHOICES[@]}"; do
       ./test/test_offline.py \
         --model "$model" \
         --dataset "$dataset" \
-        --epochs 1000 \
+        --epochs 2 \
         #--chunk-decay "auto:0.1" \
         #--chunk-order "rand" \
         #--snaps-count 8 \

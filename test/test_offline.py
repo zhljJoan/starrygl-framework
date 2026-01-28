@@ -14,7 +14,7 @@ from functools import partial
 current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.abspath(os.path.join(current_path, os.pardir))
 sys.path.append(str(parent_path))
-
+import torch.cuda.nvtx as nvtx
 from starrygl.cache.NodeState import DistNodeState, HistoryLayerUpdater
 from starrygl.data.graph_context import StarryglGraphContext
 from starrygl.utils.partition_book import PartitionState
@@ -178,6 +178,7 @@ class TrainingEngine:
         print(f"Running epoch step in {mode} mode...")
         for step, batch in enumerate(loader):
             if batch is None: continue
+            nvtx.range_push(f"Step Forward")
             with torch.set_grad_enabled(mode == 'train'):
                 h = self.model(
                     blocks=batch.mfgs, routes=batch.routes, mailbox_data=batch.mailbox,
@@ -201,6 +202,8 @@ class TrainingEngine:
                     torch.cat([pos_out, neg_out]),
                     torch.cat([torch.ones_like(pos_out), torch.zeros_like(neg_out)])
                 )
+            nvtx.range_pop()
+            nvtx.range_push(f"Step Backward")
             if mode == 'train':
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -222,6 +225,8 @@ class TrainingEngine:
                 aps.append(average_precision_score(y_true, y_pred))
                 try: aucs.append(roc_auc_score(y_true, y_pred))
                 except: pass
+            
+            nvtx.range_pop()
             if step % 20 == 0 and self.ctx.rank == 0:
                 print(f"Step {step} | Loss: {loss.item():.4f}")
         return total_loss/(step+1), sum(aps)/len(aps) if aps else 0, sum(aucs)/len(aucs) if aucs else 0
