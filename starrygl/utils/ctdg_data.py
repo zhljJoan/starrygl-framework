@@ -85,15 +85,12 @@ class CTDGDataLoader:
     
     def get_dataset(self, root = None):
         root = Path(root).expanduser().resolve()
-        path = root/ self.name / "edges"
+        path = root/ self.name / "edges.csv"
         if not path.exists():
             path = root / self.name / f"{self.name}.edges"
             if not path.exists():
-                path = root / self.name / f"edges.csv"
-                if not path.exists():
-                    print(f"File not found: {path}")
-                    return None
-            
+                print(f"File not found: {path}")
+                return None
         edges, num_nodes, num_edges, train_mask, val_mask, test_mask = self._read_web_data(path)
         i_deg = scatter_add(torch.ones(num_edges),edges[1],dim=0, dim_size = num_nodes).int()
         o_deg = scatter_add(torch.ones(num_edges),edges[0],dim=0, dim_size = num_nodes).int()
@@ -122,8 +119,8 @@ class CTDGDataLoader:
 if __name__ == "__main__":
     #src_root = "~/DATA/DynaHB"
     #tgt_root = "~/DATA/FlareGraph"
-    #src_root = "/mnt/nfs/zlj/TGL-DATA"
-    src_root = "/mnt/data/zlj/tgl_data/DATA"
+    src_root = "/mnt/nfs/zlj/TGL-DATA"
+    #src_root = "/mnt/data/zlj/tgl_data/DATA"
     #src_root = "/mnt/data/zlj/starrygl-data/raw"
     tgt_root = "/mnt/data/zlj/starrygl-data"
     root = Path(tgt_root).expanduser().resolve() / "ctdg"
