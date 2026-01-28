@@ -14,7 +14,7 @@ for model in "${MODEL_CHOICES[@]}"; do
     torchrun \
       --nproc_per_node 4 \
       --standalone \
-      ./test/test_dataloader.py \
+      ./test/test_offline.py \
         --model "$model" \
         --dataset "$dataset" \
         --epochs 1000 \

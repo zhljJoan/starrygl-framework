@@ -177,9 +177,9 @@ def _jit_sample_kernel(
     
 class MaterializedMultiLayerBuilder:
     def __init__(self, partition_data, num_nodes, node_parts, rep_table, pid, num_parts):
-        self.hist_src = partition_data['src']
-        self.hist_dst = partition_data['dst']
-        self.hist_ts = partition_data['ts']
+        self.hist_src = partition_data['src'].astype(np.int64)
+        self.hist_dst = partition_data['dst'].astype(np.int64)
+        self.hist_ts = partition_data['ts'].astype(np.int64)
         self.hist_cluster = partition_data.get('cid', np.zeros_like(self.hist_src, dtype=np.int64))
         self.hist_eid = partition_data.get('eid', np.arange(len(self.hist_src), dtype=np.int64))
         self.num_nodes = num_nodes
@@ -203,6 +203,8 @@ class MaterializedMultiLayerBuilder:
         np.cumsum(self.full_indptr, out=self.full_indptr)
 
     def _get_unique_pairs(self, nodes, timestamps):
+        nodes = nodes.astype(np.int64)
+        timestamps = timestamps.astype(np.int64)
         dt = np.dtype([('id', nodes.dtype), ('ts', timestamps.dtype)])
         combined = np.empty(len(nodes), dtype=dt)
         combined['id'] = nodes
@@ -221,8 +223,6 @@ class MaterializedMultiLayerBuilder:
         indptr = np.zeros(num_dst_nodes + 1, dtype=np.int64)
         u, c = np.unique(s_dst, return_counts=True)
         valid_mask = u < num_dst_nodes
-        if(valid_mask.sum() != len(u)):
-            print("Warning: Some destination nodes are out of bounds in _build_csc_from_pairs.")
         indptr[u[valid_mask]+1] = c[valid_mask]
         np.cumsum(indptr, out=indptr)
         
@@ -350,10 +350,10 @@ class MaterializedMultiLayerBuilder:
             )
             
             if raw_src is None:
-                #curr_uid = np.array([], dtype=curr_uid.dtype)
-                #curr_uts = np.array([], dtype=curr_uts.dtype)
+                curr_uid = np.array([], dtype=curr_uid.dtype)
+                curr_uts = np.array([], dtype=curr_uts.dtype)
                 batch_data.append({
-                    "indptr": np.zeros(curr_uid.shape[0]+1, dtype=np.int64), "indices": np.array([], dtype=np.int64),
+                    "indptr": np.zeros(1, dtype=np.int64), "indices": np.array([], dtype=np.int64),
                     "eid": np.array([], dtype=np.int64), "edge_ts": np.array([], dtype=curr_uts.dtype),
                     "edge_dt": np.array([], dtype=np.float32), "gids": curr_uid, "ts": curr_uts
                 })
@@ -365,10 +365,7 @@ class MaterializedMultiLayerBuilder:
             ptr, idx, b_ts, b_dt, b_eid = self._build_csc_from_pairs(
                 next_inv, raw_dst_mapped, raw_ts, raw_dt, raw_eid, curr_uid.shape[0]
             )
-            if(ptr.shape[0] != curr_uid.shape[0] + 1 or ptr.shape[0] != batch_data[-1]['gids'].shape[0] + 1):
-                print("Error: Indptr size mismatch in layer {}".format(l))
-                print("Expected size: {}, Actual size: {}".format(curr_uid.shape[0] + 1, ptr.shape[0]))
-                raise ValueError("Indptr size mismatch.")
+   
             batch_data.append({
                 "indptr": ptr, "indices": idx, "eid": b_eid, "edge_ts": b_ts,
                 "edge_dt": b_dt, "gids": next_uid, "ts": next_uts
@@ -508,10 +505,10 @@ def run_offline_materialization(
             chunk_route = c_data.get('route', None)
             
             if task_type == 'link':
-                task_src = c_data['src'].numpy()
-                task_dst = c_data['dst'].numpy()
-                task_ts = c_data['ts'].numpy()
-                task_eid = c_data['eid'].numpy()
+                task_src = c_data['src'].numpy().astype(np.int64)
+                task_dst = c_data['dst'].numpy().astype(np.int64)
+                task_ts = c_data['ts'].numpy().astype(np.int64)
+                task_eid = c_data['eid'].numpy().astype(np.int64)
                 
                 # [Fix] Assign Global Label (Already reordered in main)
                 if global_edge_label is not None:

@@ -120,7 +120,7 @@ class TrainingEngine:
 
     def _create_loader(self, indices:slice):
         #if len(indices) == 0: return None
-        subset = self.full_dataset#.subset(indices)
+        subset = self.full_dataset.subset(indices)
         sampler = SlotAwareSampler(subset) # Compatible with Subset? Usually Subset changes indexing.
         # Check: SlotAwareSampler expects dataset to have __len__. Subset has it.
         # But indices inside Subset are remapped. 
@@ -231,8 +231,8 @@ class TrainingEngine:
         # Create loaders lazily or upfront
         print('rank{} train_idx {} val_idx {} test_idx {}'.format(self.ctx.rank, self.train_idx, self.val_idx, self.test_idx))
         train_loader = self._create_loader(self.train_idx)
-        #val_loader = self._create_loader(self.val_idx)
-        #test_loader = self._create_loader(self.test_idx)
+        val_loader = self._create_loader(self.val_idx)
+        test_loader = self._create_loader(self.test_idx)
         
         for ep in range(self.args.epochs):
             start = time_counter.time_count.start()
