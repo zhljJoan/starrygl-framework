@@ -322,133 +322,133 @@ def prepare_spatiotemporal_chunks(
         
         ctrlen = []
         
-        for tid in tqdm(range(len(time_boundaries)-1), desc=f"Part {pid}"):
-            s, e = slot_indices[tid], slot_indices[tid+1]
-            if s >= e: continue
-            
-            # 1. 提取当前 Slot 数据
-            sl_src, sl_dst, sl_ts, sl_eid = p_src[s:e], p_dst[s:e], p_ts[s:e], p_eid[s:e]
-            
-            # 2. 核心排序：Cluster ID 为第一关键字，时间为第二关键字
-            # 这保证了"相似"(ID相近)的 Cluster 在物理内存上是连续的
-            sl_cids = node_clusters_t[sl_dst]
-            # 处理未聚类节点 (-1)
-            sl_cids[sl_cids == -1] = 999999
-            
-            sort_k = np.lexsort((sl_ts.cpu().numpy(), sl_cids.cpu().numpy()))
-            sort_k_t = torch.from_numpy(sort_k)
-            
-            sl_src, sl_dst, sl_ts, sl_eid, sl_cids = \
-                sl_src[sort_k_t], sl_dst[sort_k_t], sl_ts[sort_k_t], sl_eid[sort_k_t], sl_cids[sort_k_t]
-            
-            # --- [Modification Start] 基于累积分布的动态均衡切分 ---
-            num_items = len(sl_src)
-            if num_items > 0:
-                # 3. 确定切分份数 (K)
-                # max_events_per_chunk 仅作为一个"量级参考"，用于决定切几份，不再作为硬性上限
-                # 如果总数很少，至少切 1 份
-                num_subs = max(1, int(np.round(num_items / max_events_per_chunk)))
-                target_size = num_items / num_subs
-                
-                # 4. 构建 Cluster 粒度的累积分布
-                # unique_consecutive: 获取每个连续 Cluster 的大小
-                # 注意：因为已经按 CID 排序，这里得到的 counts 就是每个 Cluster (及其所有时间步边) 的总数
-                _, counts = torch.unique_consecutive(sl_cids, return_counts=True)
-                
-                # cumsum: [c1, c1+c2, c1+c2+c3, ...] -> 潜在的完美切分点
-                cluster_boundaries = torch.cumsum(counts, dim=0).cpu().numpy()
-                
-                start_idx = 0
-                
-                for k in range(num_subs):
-                    # 最后一包直接收尾，防止精度误差丢数据
-                    if k == num_subs - 1:
-                        end_idx = num_items
-                    else:
-                        # 5. 寻找最佳切分点
-                        # 理想切分位置：当前应该是第 (k+1) 份的结束
-                        ideal_boundary = (k + 1) * target_size
-                        
-                        # 在 cluster_boundaries 中搜索最接近 ideal_boundary 的位置
-                        # searchsorted 返回插入位置，使得 left <= ideal < right
-                        idx = np.searchsorted(cluster_boundaries, ideal_boundary)
-                        
-                        # 获取"前一个边界"和"后一个边界"作为候选
-                        # 前候选项 (idx-1)
-                        cand_prev = cluster_boundaries[idx-1] if idx > 0 else 0
-                        # 后候选项 (idx)
-                        cand_next = cluster_boundaries[idx] if idx < len(cluster_boundaries) else num_items
-                        
-                        # 6. 择优录取 (综合考虑前后信息)
-                        # 比较哪个边界离理想值更近，从而使当前 chunk 和下一个 chunk 的负载更均衡
-                        dist_prev = abs(cand_prev - ideal_boundary)
-                        dist_next = abs(cand_next - ideal_boundary)
-                        
-                        if dist_prev <= dist_next:
-                            best_cut = cand_prev
-                        else:
-                            best_cut = cand_next
-                        
-                        # 确保进度向前 (不要切出空包)
-                        end_idx = max(start_idx + 1, int(best_cut))
-                        # 确保不越界
-                        end_idx = min(end_idx, num_items)
-
-                    # 7. 保存 Sub-chunk
-                    # 只有当非空时才保存
-                    if end_idx > start_idx:
-                        ctrlen.append(end_idx - start_idx)
-                        chunk = {
-                            "src": sl_src[start_idx:end_idx], 
-                            "dst": sl_dst[start_idx:end_idx], 
-                            "ts": sl_ts[start_idx:end_idx], 
-                            "eid": sl_eid[start_idx:end_idx],
-                            "cid": torch.unique(sl_cids[start_idx:end_idx]),
-                            "slot_id": tid, 
-                            "chunk_id": global_ctr
-                        }
-                        torch.save(chunk, part_dir / f"slot_{tid:04d}_sub_{k:04d}.pt")
-                        global_ctr += 1
-                        
-                        # 更新下一轮起点
-                        start_idx = end_idx
-            print(f"- Slot {tid}: {num_items} edges split into {num_subs} chunks.Min{min(ctrlen)}, Max{max(ctrlen)}, Avg{np.mean(ctrlen):.2f}")
-
-        
         # for tid in tqdm(range(len(time_boundaries)-1), desc=f"Part {pid}"):
         #     s, e = slot_indices[tid], slot_indices[tid+1]
         #     if s >= e: continue
             
+        #     # 1. 提取当前 Slot 数据
         #     sl_src, sl_dst, sl_ts, sl_eid = p_src[s:e], p_dst[s:e], p_ts[s:e], p_eid[s:e]
             
-        #     # 微批次 Cluster 排序
+        #     # 2. 核心排序：Cluster ID 为第一关键字，时间为第二关键字
+        #     # 这保证了"相似"(ID相近)的 Cluster 在物理内存上是连续的
         #     sl_cids = node_clusters_t[sl_dst]
+        #     # 处理未聚类节点 (-1)
         #     sl_cids[sl_cids == -1] = 999999
             
         #     sort_k = np.lexsort((sl_ts.cpu().numpy(), sl_cids.cpu().numpy()))
         #     sort_k_t = torch.from_numpy(sort_k)
             
-        #     cpsl_src, cpsl_dst, cpsl_ts, cpsl_eid, cpsl_cids = sl_src[sort_k_t], sl_dst[sort_k_t], sl_ts[sort_k_t], sl_eid[sort_k_t], sl_cids[sort_k_t]
+        #     sl_src, sl_dst, sl_ts, sl_eid, sl_cids = \
+        #         sl_src[sort_k_t], sl_dst[sort_k_t], sl_ts[sort_k_t], sl_eid[sort_k_t], sl_cids[sort_k_t]
             
-        #     sl_src, sl_dst, sl_ts, sl_eid, sl_cids = cpsl_src, cpsl_dst, cpsl_ts, cpsl_eid, cpsl_cids
-            
-        #     # sl_src, sl_dst, sl_ts, sl_eid, sl_cids = \
-        #     #     sl_src[sort_k_t], sl_dst[sort_k_t], sl_ts[sort_k_t], sl_eid[sort_k_t], sl_cids[sort_k_t]
-            
-        #     # 切分 Sub-chunks
+        #     # --- [Modification Start] 基于累积分布的动态均衡切分 ---
         #     num_items = len(sl_src)
-        #     num_subs = (num_items + max_events_per_chunk - 1) // max_events_per_chunk
+        #     if num_items > 0:
+        #         # 3. 确定切分份数 (K)
+        #         # max_events_per_chunk 仅作为一个"量级参考"，用于决定切几份，不再作为硬性上限
+        #         # 如果总数很少，至少切 1 份
+        #         num_subs = max(1, int(np.round(num_items / max_events_per_chunk)))
+        #         target_size = num_items / num_subs
+                
+        #         # 4. 构建 Cluster 粒度的累积分布
+        #         # unique_consecutive: 获取每个连续 Cluster 的大小
+        #         # 注意：因为已经按 CID 排序，这里得到的 counts 就是每个 Cluster (及其所有时间步边) 的总数
+        #         _, counts = torch.unique_consecutive(sl_cids, return_counts=True)
+                
+        #         # cumsum: [c1, c1+c2, c1+c2+c3, ...] -> 潜在的完美切分点
+        #         cluster_boundaries = torch.cumsum(counts, dim=0).cpu().numpy()
+                
+        #         start_idx = 0
+                
+        #         for k in range(num_subs):
+        #             # 最后一包直接收尾，防止精度误差丢数据
+        #             if k == num_subs - 1:
+        #                 end_idx = num_items
+        #             else:
+        #                 # 5. 寻找最佳切分点
+        #                 # 理想切分位置：当前应该是第 (k+1) 份的结束
+        #                 ideal_boundary = (k + 1) * target_size
+                        
+        #                 # 在 cluster_boundaries 中搜索最接近 ideal_boundary 的位置
+        #                 # searchsorted 返回插入位置，使得 left <= ideal < right
+        #                 idx = np.searchsorted(cluster_boundaries, ideal_boundary)
+                        
+        #                 # 获取"前一个边界"和"后一个边界"作为候选
+        #                 # 前候选项 (idx-1)
+        #                 cand_prev = cluster_boundaries[idx-1] if idx > 0 else 0
+        #                 # 后候选项 (idx)
+        #                 cand_next = cluster_boundaries[idx] if idx < len(cluster_boundaries) else num_items
+                        
+        #                 # 6. 择优录取 (综合考虑前后信息)
+        #                 # 比较哪个边界离理想值更近，从而使当前 chunk 和下一个 chunk 的负载更均衡
+        #                 dist_prev = abs(cand_prev - ideal_boundary)
+        #                 dist_next = abs(cand_next - ideal_boundary)
+                        
+        #                 if dist_prev <= dist_next:
+        #                     best_cut = cand_prev
+        #                 else:
+        #                     best_cut = cand_next
+                        
+        #                 # 确保进度向前 (不要切出空包)
+        #                 end_idx = max(start_idx + 1, int(best_cut))
+        #                 # 确保不越界
+        #                 end_idx = min(end_idx, num_items)
+
+        #             # 7. 保存 Sub-chunk
+        #             # 只有当非空时才保存
+        #             if end_idx > start_idx:
+        #                 ctrlen.append(end_idx - start_idx)
+        #                 chunk = {
+        #                     "src": sl_src[start_idx:end_idx], 
+        #                     "dst": sl_dst[start_idx:end_idx], 
+        #                     "ts": sl_ts[start_idx:end_idx], 
+        #                     "eid": sl_eid[start_idx:end_idx],
+        #                     "cid": torch.unique(sl_cids[start_idx:end_idx]),
+        #                     "slot_id": tid, 
+        #                     "chunk_id": global_ctr
+        #                 }
+        #                 torch.save(chunk, part_dir / f"slot_{tid:04d}_sub_{k:04d}.pt")
+        #                 global_ctr += 1
+                        
+        #                 # 更新下一轮起点
+        #                 start_idx = end_idx
+        #     print(f"- Slot {tid}: {num_items} edges split into {num_subs} chunks.Min{min(ctrlen)}, Max{max(ctrlen)}, Avg{np.mean(ctrlen):.2f}")
+
+        
+        for tid in tqdm(range(len(time_boundaries)-1), desc=f"Part {pid}"):
+            s, e = slot_indices[tid], slot_indices[tid+1]
+            if s >= e: continue
             
-        #     for k in range(num_subs):
-        #         cs, ce = k*max_events_per_chunk, min((k+1)*max_events_per_chunk, num_items)
-        #         chunk = {
-        #             "src": sl_src[cs:ce], "dst": sl_dst[cs:ce], 
-        #             "ts": sl_ts[cs:ce], "eid": sl_eid[cs:ce],
-        #             "cid": torch.unique(sl_cids[cs:ce]),
-        #             "slot_id": tid, "chunk_id": global_ctr
-        #         }
-        #         torch.save(chunk, part_dir / f"slot_{tid:04d}_sub_{k:04d}.pt")
-        #         global_ctr += 1
+            sl_src, sl_dst, sl_ts, sl_eid = p_src[s:e], p_dst[s:e], p_ts[s:e], p_eid[s:e]
+            
+            # 微批次 Cluster 排序
+            sl_cids = node_clusters_t[sl_dst]
+            sl_cids[sl_cids == -1] = 999999
+            
+            sort_k = np.lexsort((sl_ts.cpu().numpy(), sl_cids.cpu().numpy()))
+            sort_k_t = torch.from_numpy(sort_k)
+            
+            cpsl_src, cpsl_dst, cpsl_ts, cpsl_eid, cpsl_cids = sl_src[sort_k_t], sl_dst[sort_k_t], sl_ts[sort_k_t], sl_eid[sort_k_t], sl_cids[sort_k_t]
+            
+            sl_src, sl_dst, sl_ts, sl_eid, sl_cids = cpsl_src, cpsl_dst, cpsl_ts, cpsl_eid, cpsl_cids
+            
+            # sl_src, sl_dst, sl_ts, sl_eid, sl_cids = \
+            #     sl_src[sort_k_t], sl_dst[sort_k_t], sl_ts[sort_k_t], sl_eid[sort_k_t], sl_cids[sort_k_t]
+            
+            # 切分 Sub-chunks
+            num_items = len(sl_src)
+            num_subs = (num_items + max_events_per_chunk - 1) // max_events_per_chunk
+            
+            for k in range(num_subs):
+                cs, ce = k*max_events_per_chunk, min((k+1)*max_events_per_chunk, num_items)
+                chunk = {
+                    "src": sl_src[cs:ce], "dst": sl_dst[cs:ce], 
+                    "ts": sl_ts[cs:ce], "eid": sl_eid[cs:ce],
+                    "cid": torch.unique(sl_cids[cs:ce]),
+                    "slot_id": tid, "chunk_id": global_ctr
+                }
+                torch.save(chunk, part_dir / f"slot_{tid:04d}_sub_{k:04d}.pt")
+                global_ctr += 1
 
 # ==============================================================================
 # Part 3: Distributed Metadata & Feature Storage (重点修改)
