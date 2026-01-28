@@ -640,7 +640,7 @@ if __name__ == "__main__":
 
     for p_path in src_root.glob("*.pth"):
         name = p_path.stem
-        if name != "StackOverflow" and name != 'WikiTalk': continue # 调试用
+        if name != "WIKI": continue # 调试用
         
         print(f"=== Processing {name} ===")
         data = torch.load(p_path)
