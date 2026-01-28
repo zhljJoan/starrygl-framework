@@ -185,7 +185,8 @@ def build_replica_table(num_nodes, partition_book, num_parts, type = None):
         if not isinstance(nodes, torch.Tensor):
             nodes = torch.tensor(nodes, dtype=torch.long)
         else:
-            assert nodes.dtype == torch.long, "Nodes must be long tensor"
+            #assert nodes.dtype == torch.long, "Nodes must be long tensor"
+            nodes = nodes.to(torch.long)
         part_ids = torch.full_like(nodes, part, dtype=torch.long)
         loc = torch.arange(nodes.shape[0], dtype=torch.long, device=nodes.device)
         halo_list.append(torch.stack((nodes, part_ids, loc)))
