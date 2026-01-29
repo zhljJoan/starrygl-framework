@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import time
+import psutil
 from sklearn.metrics import average_precision_score, roc_auc_score
 import torch
 import torch.nn as nn
@@ -29,7 +30,59 @@ from starrygl.utils.params import get_config
 # ==============================================================================
 # Training Engine
 # ==============================================================================
+def setup_numa_affinity(gpu_id=0, num_main_cores=4, num_prefetch_cores=4):
+    """
+    根据 GPU ID 自动设置 NUMA 亲和性，隔离主线程和预取线程
+    """
+    # 1. 确定 NUMA 节点策略
+    # 根据你的 topo: GPU0/1 -> 偶数核(Node 0); GPU2/3 -> 奇数核(Node 1)
+    total_logical_cores = psutil.cpu_count()
+    if gpu_id in [0, 1]:
+        # 生成所有偶数核列表: [0, 2, 4, ... 94]
+        # 假设最大核数是 96，range(0, 96, 2)
+        candidate_cores = list(range(0, total_logical_cores, 2))
+        node_name = "NUMA Node 0 (Even)"
+    elif gpu_id in [2, 3]:
+        # 生成所有奇数核列表: [1, 3, 5, ... 95]
+        candidate_cores = list(range(1, total_logical_cores, 2))
+        node_name = "NUMA Node 1 (Odd)"
+    else:
+        print(f"[Warn] Unknown GPU ID {gpu_id}, no affinity set.")
+        return [], []
 
+    print(f"=== Affinity Setup for GPU {gpu_id} ({node_name}) ===")
+
+    # 2. 切蛋糕：分配核心
+    # 避开前 4 个核 (0,2 or 1,3)，往往有系统中断干扰
+    offset = 4 
+    available = candidate_cores[offset:] 
+    
+    if len(available) < (num_main_cores + num_prefetch_cores):
+        print("[Warn] Not enough cores for strict isolation!")
+        # 回退策略：不避开头部
+        available = candidate_cores
+    main_cores = available[:num_main_cores]
+    # 预取线程取后 N 个 (跳过中间几个防止边界干扰)
+    bg_start_idx = num_main_cores + 2
+    prefetch_cores = available[bg_start_idx : bg_start_idx + num_prefetch_cores]
+    
+    # 3. 绑定当前主进程
+    print(f" -> Main Thread Cores : {main_cores}")
+    print(f" -> Prefetcher Cores  : {prefetch_cores}")
+    
+    p = psutil.Process()
+    try:
+        p.cpu_affinity(main_cores)
+    except:
+        os.sched_setaffinity(0, main_cores)
+        
+    # 限制 PyTorch 主线程并行度
+    torch.set_num_threads(len(main_cores))
+    
+    return main_cores, prefetch_cores
+# CURRENT_GPU_ID = int(os.environ.get("LOCAL_RANK", 0))  # 如果你是多卡 DDP，这里用 local_rank
+# main_set, prefetch_set = setup_numa_affinity(CURRENT_GPU_ID, num_main_cores=16, num_prefetch_cores=16)      
+# os.environ["STAR_PREFETCH_CORES"] = ",".join(map(str, prefetch_set))
 class TrainingEngine:
     def parse_args(self):
         parser = argparse.ArgumentParser()
@@ -139,6 +192,7 @@ class TrainingEngine:
             loader=raw_loader, device=self.device, partition_state=self.partition_state,
             context=self.graph_context, hist_cache=self.history_states_updater
         )
+        #return original_prefetcher
         return ThreadedPrefetcher(original_prefetcher)
 
     def prepare_model(self):
@@ -149,10 +203,13 @@ class TrainingEngine:
             input_size=self.node_feat_cpu.shape[1], hidden_size=hidden_dim, output_size=hidden_dim,
             time_feats=self.cfg["train"]["dim_time"], edge_feats=self.dim_edge_feat,
             memory_params={'type': 'GRU', 'input_dim': mail_input},
-            cache_manager=self.router, num_layers=2
+            cache_manager=self.router, num_layers=self.cfg["train"]["num_layers"],
+            num_heads=self.cfg["train"]["num_heads"],
+            dropout=self.cfg["train"]["dropout"], att_dropout=self.cfg["train"]["att_dropout"]
         ).to(self.device)
         
         self.model = nn.parallel.DistributedDataParallel(self.model, device_ids=[self.ctx.rank], find_unused_parameters=True)
+        self.model = torch.compile(self.model, mode="reduce-overhead", dynamic=True)
         self.predictor = EdgePredictor(hidden_dim).to(self.device)
         self.optimizer = torch.optim.Adam(list(self.model.parameters()) + list(self.predictor.parameters()), lr=self.args.lr)
         self.criterion = nn.BCEWithLogitsLoss()
