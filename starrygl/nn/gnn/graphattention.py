@@ -68,6 +68,7 @@ class TransfomerAttentionLayer(AsyncModule):
 
         return x, route, route_first
     
+    #@torch.compile
     def forward(self,
                     g:DGLGraph, 
                     x: Tensor | None = None,
