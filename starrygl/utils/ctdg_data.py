@@ -127,6 +127,8 @@ if __name__ == "__main__":
     root.mkdir(parents=True, exist_ok=True)
     for p in Path(src_root).expanduser().resolve().glob("*/"):
         name = p.stem
+        if name not in ['StackOverflow','WikiTalk']:
+            continue
         #if name in ['Flights','MOOC','LASTFM','REDDIT','stackoverflow','WIKI', 'wikitalk']:
         #    continue
         print(f"Processing {name}...")

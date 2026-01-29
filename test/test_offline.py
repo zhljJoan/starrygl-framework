@@ -216,7 +216,10 @@ class TrainingEngine:
 
     def reset_states(self):
         """Reset Memory and Mailbox for a new epoch."""
-        pass
+        #pass
+        self.history_states_updater.reset()
+        if self.cfg["train"]["memory_type"] is not None:
+            self.graph_context.mailbox.reset()
         # if hasattr(self.model.module, 'memory') and self.model.module.memory is not None:
         #     # Manually reset memory tensors if method doesn't exist
         #     if hasattr(self.model.module.memory, 'reset_memory'):
@@ -315,12 +318,12 @@ class TrainingEngine:
                 print(f"Ep {ep} | T: {end:.2f}s | Train L:{t_loss:.4f} AP:{t_ap:.4f} | Val L:{v_loss:.4f} AP:{v_ap:.4f}")
 
         # 4. Final Test
-        if self.ctx.rank == 0: print("\n=== Final Testing ===")
+            if self.ctx.rank == 0: print("\n=== Final Testing ===")
         # Note: Ideally you should reload best model and re-run [Train -> Val -> Test] to establish memory
         # Here we just run Test after the last Epoch's Val, which is acceptable for inductive eval
-        test_loss, test_ap, test_auc = self.run_epoch_step(test_loader, mode='eval')
-        if self.ctx.rank == 0:
-            print(f"Test Result | Loss: {test_loss:.4f} | AP: {test_ap:.4f} | AUC: {test_auc:.4f}")
+            test_loss, test_ap, test_auc = self.run_epoch_step(test_loader, mode='eval')
+            if self.ctx.rank == 0:
+                print(f"Test Result | Loss: {test_loss:.4f} | AP: {test_ap:.4f} | AUC: {test_auc:.4f}")
 
 if __name__ == "__main__":
     try:
