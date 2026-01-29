@@ -565,7 +565,7 @@ if __name__ == "__main__":
     
     LAYER_CONFIGS = {
         'meta': {'start_offset': -1, 'end_offset': 0, 'graph_type': 'c'},
-        'layer': [{'type': 'recent', 'fanout': 10}, {'type': 'recent', 'fanout': 10}]
+        'layer': [{'type': 'recent', 'fanout': 10}]
     }
 
     for p in src_root.glob("*.pth"):
