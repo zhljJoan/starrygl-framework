@@ -209,7 +209,7 @@ class TrainingEngine:
         ).to(self.device)
         
         self.model = nn.parallel.DistributedDataParallel(self.model, device_ids=[self.ctx.rank], find_unused_parameters=True)
-        self.model = torch.compile(self.model, mode="reduce-overhead", dynamic=True)
+        #self.model = torch.compile(self.model, mode="reduce-overhead", dynamic=True)
         self.predictor = EdgePredictor(hidden_dim).to(self.device)
         self.optimizer = torch.optim.Adam(list(self.model.parameters()) + list(self.predictor.parameters()), lr=self.args.lr)
         self.criterion = nn.BCEWithLogitsLoss()
