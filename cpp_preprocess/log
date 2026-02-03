@@ -1,0 +1,73 @@
+bash: /home/zlj/.miniconda3/envs/tgnn_3.10/lib/libtinfo.so.6: no version information available (required by bash)
+-- Caffe2: CUDA detected: 11.8
+-- Caffe2: CUDA nvcc is: /home/zlj/local/cuda-11.8/bin/nvcc
+-- Caffe2: CUDA toolkit directory: /home/zlj/local/cuda-11.8
+-- Caffe2: Header version is: 11.8
+-- /home/zlj/local/cuda-11.8/lib64/libnvrtc.so shorthash is 672ee683
+-- USE_CUDNN is set to 0. Compiling without cuDNN support
+-- USE_CUSPARSELT is set to 0. Compiling without cuSPARSELt support
+-- Autodetected CUDA architecture(s):  8.6 8.6 8.6 8.6
+-- Added CUDA NVCC flags for: -gencode;arch=compute_86,code=sm_86
+CMake Warning at /home/zlj/.miniconda3/envs/tgnn_3.10/lib/python3.10/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:22 (message):
+  static library kineto_LIBRARY-NOTFOUND not found.
+Call Stack (most recent call first):
+  /home/zlj/.miniconda3/envs/tgnn_3.10/lib/python3.10/site-packages/torch/share/cmake/Torch/TorchConfig.cmake:127 (append_torchlib_if_found)
+  CMakeLists.txt:7 (find_package)
+
+
+-- Configuring done (8.6s)
+CMake Warning at CMakeLists.txt:10 (add_executable):
+  Cannot generate a safe runtime search path for target StarryGL_Processor
+  because files in some directories may conflict with libraries in implicit
+  directories:
+
+    runtime library [libgomp.so.1] in /usr/lib/gcc/x86_64-linux-gnu/9 may be hidden by files in:
+      /home/zlj/.miniconda3/envs/tgnn_3.10/lib
+
+  Some of these libraries may not be found correctly.
+
+
+CMake Warning at CMakeLists.txt:10 (add_executable):
+  Cannot generate a safe runtime search path for target StarryGL_Processor
+  because there is a cycle in the constraint graph:
+
+    dir 0 is [/lib/intel64]
+    dir 1 is [/lib/intel64_win]
+    dir 2 is [/lib/win-x64]
+    dir 3 is [/home/zlj/.miniconda3/envs/tgnn_3.10/lib/python3.10/site-packages/torch/lib]
+      dir 4 must precede it due to runtime library [libcublas.so.11]
+    dir 4 is [/home/zlj/local/cuda-11.8/lib64]
+      dir 5 must precede it due to runtime library [libnvToolsExt.so.1]
+    dir 5 is [/home/zlj/.miniconda3/envs/tgnn_3.10/lib]
+      dir 4 must precede it due to runtime library [libnvrtc.so.11.2]
+
+  Some of these libraries may not be found correctly.
+
+
+-- Generating done (0.0s)
+-- Build files have been written to: /home/zlj/Starrygl-v2.0/cpp_preprocess/build
+[ 50%] Building CXX object CMakeFiles/StarryGL_Processor.dir/src/main.cpp.o
+[100%] Linking CXX executable StarryGL_Processor
+[100%] Built target StarryGL_Processor
+Starting Preprocessing...
+=== StarryGL C++ Preprocessor (Meta + Filter) ===
+  [Load] Loading history...
+  [Build] Sorting 2975862 edges...
+  [Sample] Processing 2830 slots...
+...............................................
+  Done Partition 0
+  [Load] Loading history...
+  [Build] Sorting 5515994 edges...
+  [Sample] Processing 5590 slots...
+.............................................................................................
+  Done Partition 1
+  [Load] Loading history...
+  [Build] Sorting 3334922 edges...
+  [Sample] Processing 3074 slots...
+...................................................
+  Done Partition 2
+  [Load] Loading history...
+  [Build] Sorting 3839500 edges...
+  [Sample] Processing 3682 slots...
+.............................................................
+  Done Partition 3
