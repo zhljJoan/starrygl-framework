@@ -19,7 +19,7 @@ import torch.cuda.nvtx as nvtx
 from starrygl.cache.NodeState import DistNodeState, HistoryLayerUpdater
 from starrygl.data.graph_context import StarryglGraphContext
 from starrygl.utils.partition_book import PartitionState
-from starrygl.data.batches import AtomicDataset, SlotAwareSampler, collate_and_merge
+from starrygl.data.batches import CTDGBatchSampler,  StarryGLDataset, collate_and_merge
 from starrygl.utils import DistributedContext, time_counter
 from starrygl.cache.cache_route import CacheRouteManager
 from starrygl.data.prefetcher import HostToDevicePrefetcher, ThreadedPrefetcher
@@ -158,7 +158,8 @@ class TrainingEngine:
         )
 
         # === [核心逻辑] Dataset Split (70/15/15) ===
-        self.full_dataset = AtomicDataset(self.processed_dir, neg_set=self.args.neg_set)
+        self.full_dataset = StarryGLDataset(self.processed_dir)
+        #AtomicDataset(self.processed_dir, neg_set=self.args.neg_set)
         total_len = len(self.full_dataset)
         train_len = int(total_len * 0.70)
         val_len = int(total_len * 0.15)
@@ -173,21 +174,13 @@ class TrainingEngine:
 
     def _create_loader(self, indices:slice):
         #if len(indices) == 0: return None
-        subset = self.full_dataset.subset(indices)
-        sampler = SlotAwareSampler(subset) # Compatible with Subset? Usually Subset changes indexing.
-        # Check: SlotAwareSampler expects dataset to have __len__. Subset has it.
-        # But indices inside Subset are remapped. 
-        # SlotAwareSampler implementation usually iterates range(len(dataset)). 
-        # So passing Subset is fine, it will yield 0..len(subset)-1, which Subset maps to real indices.
-        
+        subset = self.full_dataset
+        sampler = CTDGBatchSampler(subset, batch_size = self.args.batch_slots, subset_range=indices) # Compatible with Subset? Usually Subset changes indexing.
         ctx = DistributedContext.get_default_context()
         my_collate = partial(collate_and_merge, world_size=ctx.world_size)
         
         raw_loader = DataLoader(
-            subset, batch_size=self.args.batch_slots, sampler=sampler,
-            collate_fn=my_collate, num_workers=4, prefetch_factor=2, persistent_workers=True,
-            pin_memory=True
-        )
+            subset, batch_sampler=sampler, collate_fn=my_collate, num_workers=0,  pin_memory=True)
         original_prefetcher = HostToDevicePrefetcher(
             loader=raw_loader, device=self.device, partition_state=self.partition_state,
             context=self.graph_context, hist_cache=self.history_states_updater
