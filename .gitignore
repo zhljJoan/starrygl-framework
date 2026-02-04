@@ -14,7 +14,7 @@ dist/
 *.out
 *.app
 *.exe
-
+*.sys-rep
 # CUDA 缓存与中间产物
 *.compute_*.h
 *.fatbin
