@@ -102,4 +102,5 @@ Thumbs.db
 
 # 如果你想保留一些轻量的示例配置
 !config/*.yaml
-!config/*.json
+!config/*.json*.nsys-rep
+*.sqlite
