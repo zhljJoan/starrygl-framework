@@ -2,10 +2,10 @@
 set -e
 source ~/.miniconda3/bin/activate tgnn_3.10
 
-export OMP_NUM_THREADS=8
+export OMP_NUM_THREADS=4
 
 MODEL_CHOICES=("mpnn_lstm")
-DATA_CHOICES=("WIKI")
+DATA_CHOICES=("WikiTalk")
 # DATA_CHOICES=("ia-slashdot-reply-dir" "soc-flickr-growth" "rec-amazon-ratings" "soc-youtube-growth" "soc-bitcoin")
 
 for model in "${MODEL_CHOICES[@]}"; do
@@ -17,7 +17,7 @@ for model in "${MODEL_CHOICES[@]}"; do
       ./test/test_offline.py \
         --model "$model" \
         --dataset "$dataset" \
-        --epochs 100\
+        --epochs 20\
         #--chunk-decay "auto:0.1" \
         #--chunk-order "rand" \
         #--snaps-count 8 \

@@ -195,6 +195,7 @@ class PartitionState:
                  num_edges: int = 0
                  
                 ):
+        #print('global num nodes is {}, global num edges is {}'.format(num_nodes, num_edges))
         
         # --- 组合模式: 实例化 Node Mapper ---
         self.node_mapper = IDMapper(

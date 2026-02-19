@@ -9,7 +9,7 @@ from torch_geometric.data import Data
 import asyncio
 import dgl
 import starrygl
-import starrygl.lib.libstarrygl_comm as starrygl_ops
+#import starrygl.lib.libstarrygl_comm as starrygl_ops
 from starrygl.utils.context import DistributedContext
 
 class NegSamplingSet:

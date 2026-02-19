@@ -65,6 +65,7 @@ class AdvancedCompensationLayer(nn.Module):
             dt: 时间差 [N]
             time_encoder: 时间编码器
         """
+        return h_hist
         if dt.dim() == 1: dt = dt.unsqueeze(1)
         
         t_emb = time_encoder(dt.float()) 

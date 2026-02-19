@@ -76,26 +76,38 @@ class TGN(nn.Module):
                 mem_input = mailbox.reshape(mailbox.shape[0], -1)
             out_memory = self.memory_updater(mem_input, memory)
             return out_memory, mail_ts
-    
-    @torch.compile
+
+    # def _apply_compensation(self, comp_layer, h_fresh, h_hist_data, is_remote, current_ts):
+    #     with torch.cuda.nvtx.range("TGN_Apply_Compensation"):
+    #         if h_hist_data is None: return h_fresh
+        
+    #         h_hist, hist_ts = h_hist_data if isinstance(h_hist_data, tuple) else (h_hist_data, None)
+    #         if h_hist.shape[-1] != h_fresh.shape[-1]: return h_fresh
+
+    #         mask = is_remote.unsqueeze(-1) if is_remote.dim() == 1 else is_remote
+    #         dt = (current_ts - hist_ts).clamp(min=0)
+    #         h_comp = comp_layer(h_hist, dt.float(), self.comp_time_enc)
+    #     return torch.where(mask, h_comp, h_fresh)
     def _apply_compensation(self, comp_layer, h_fresh, h_hist_data, is_remote, current_ts):
-        # 标记补偿逻辑的触发
+    # [NVTX] 范围标记
+        #return h_fresh
         with torch.cuda.nvtx.range("TGN_Apply_Compensation"):
             if h_hist_data is None: return h_fresh
-            
-            # 解析历史数据
             h_hist, hist_ts = h_hist_data if isinstance(h_hist_data, tuple) else (h_hist_data, None)
             if h_hist.shape[-1] != h_fresh.shape[-1]: return h_fresh
-
             mask = is_remote.unsqueeze(-1) if is_remote.dim() == 1 else is_remote
-            if not mask.any(): return h_fresh
-            
-            dt = (current_ts - hist_ts).clamp(min=0) if hist_ts is not None else torch.zeros_like(current_ts)
-            
-            # 补偿层前向计算
-            h_comp = comp_layer(h_hist, dt.float(), self.comp_time_enc)
-            return torch.where(mask, h_comp, h_fresh)
+            remote_idx = torch.nonzero(is_remote.squeeze(), as_tuple=True)[0]
+            h_hist_sub = h_hist[remote_idx].detach()
+            ts_hist_sub = hist_ts[remote_idx] if hist_ts is not None else None
+            ts_curr_sub = current_ts[remote_idx].detach()
+            dt_sub = (ts_curr_sub - ts_hist_sub).clamp(min=0) if ts_hist_sub is not None else torch.zeros_like(ts_curr_sub)
 
+            h_comp_sub = comp_layer(h_hist_sub, dt_sub.float(), self.comp_time_enc)
+            h_out = h_fresh.clone()
+            h_out.index_put_((remote_idx,), h_comp_sub)
+        
+        return h_out
+    
     def forward(self, blocks, routes, mailbox_data=None, upd_hook=None):
         
         # === 1. Memory Handling ===

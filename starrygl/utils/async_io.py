@@ -12,9 +12,10 @@ class AsyncTransferFuture:
         """
         非阻塞同步：让当前计算流等待 Event 记录时刻。
         """
-        torch.cuda.current_stream().wait_event(self._event)
+        if self._event is not None:
+            torch.cuda.current_stream().wait_event(self._event)
         return self._tensor
 
     @property
     def is_ready(self):
-        return self._event.query()
+        return self._event.query() if self._event is not None else True

@@ -22,8 +22,8 @@ __all__ = [
     "DistributedContext",
 ]
 
-from starrygl.lib.libstarrygl_comm import DistContext as DistContextCpp
-from starrygl.lib.libstarrygl_comm import init_p2p as init_p2p_cpp
+#from starrygl.lib.libstarrygl_comm import DistContext as DistContextCpp
+#from starrygl.lib.libstarrygl_comm import init_p2p as init_p2p_cpp
 
 class DistributedContext:
     """Global context manager for distributed training
@@ -104,7 +104,7 @@ class DistributedContext:
         dist.all_reduce(t, op=dist.ReduceOp.MAX, group=self._group)
         self._local_size = t.item() + 1
         
-        self.init_hybird_feature()
+        #self.init_hybird_feature()
 
     def init_hybird_feature(self):
         if self._rank == 0:

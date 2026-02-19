@@ -10,7 +10,7 @@ from pathlib import Path
 from torch.utils.data import DataLoader, Dataset, Subset
 import math
 from functools import partial
-
+from torch.profiler import profile, record_function, ProfilerActivity, schedule
 # === Path Injection ===
 current_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.abspath(os.path.join(current_path, os.pardir))
@@ -22,11 +22,11 @@ from starrygl.utils.partition_book import PartitionState
 from starrygl.data.batches import CTDGBatchSampler,  StarryGLDataset, collate_and_merge
 from starrygl.utils import DistributedContext, time_counter
 from starrygl.cache.cache_route import CacheRouteManager
-from starrygl.data.prefetcher import HostToDevicePrefetcher, ThreadedPrefetcher
+from starrygl.data.prefetcher import HostToDevicePrefetcher, OptimizedPrefetcher, ThreadedPrefetcher
 from starrygl.nn.model.tgn import TGN 
 from starrygl.nn.model.EdgePredictor import EdgePredictor
 from starrygl.utils.params import get_config
-
+import torchvision.models as models
 # ==============================================================================
 # Training Engine
 # ==============================================================================
@@ -34,16 +34,11 @@ def setup_numa_affinity(gpu_id=0, num_main_cores=4, num_prefetch_cores=4):
     """
     根据 GPU ID 自动设置 NUMA 亲和性，隔离主线程和预取线程
     """
-    # 1. 确定 NUMA 节点策略
-    # 根据你的 topo: GPU0/1 -> 偶数核(Node 0); GPU2/3 -> 奇数核(Node 1)
     total_logical_cores = psutil.cpu_count()
     if gpu_id in [0, 1]:
-        # 生成所有偶数核列表: [0, 2, 4, ... 94]
-        # 假设最大核数是 96，range(0, 96, 2)
         candidate_cores = list(range(0, total_logical_cores, 2))
         node_name = "NUMA Node 0 (Even)"
     elif gpu_id in [2, 3]:
-        # 生成所有奇数核列表: [1, 3, 5, ... 95]
         candidate_cores = list(range(1, total_logical_cores, 2))
         node_name = "NUMA Node 1 (Odd)"
     else:
@@ -51,38 +46,25 @@ def setup_numa_affinity(gpu_id=0, num_main_cores=4, num_prefetch_cores=4):
         return [], []
 
     print(f"=== Affinity Setup for GPU {gpu_id} ({node_name}) ===")
-
-    # 2. 切蛋糕：分配核心
-    # 避开前 4 个核 (0,2 or 1,3)，往往有系统中断干扰
     offset = 4 
     available = candidate_cores[offset:] 
     
     if len(available) < (num_main_cores + num_prefetch_cores):
         print("[Warn] Not enough cores for strict isolation!")
-        # 回退策略：不避开头部
         available = candidate_cores
     main_cores = available[:num_main_cores]
-    # 预取线程取后 N 个 (跳过中间几个防止边界干扰)
     bg_start_idx = num_main_cores + 2
     prefetch_cores = available[bg_start_idx : bg_start_idx + num_prefetch_cores]
-    
-    # 3. 绑定当前主进程
     print(f" -> Main Thread Cores : {main_cores}")
     print(f" -> Prefetcher Cores  : {prefetch_cores}")
-    
     p = psutil.Process()
     try:
         p.cpu_affinity(main_cores)
     except:
         os.sched_setaffinity(0, main_cores)
-        
-    # 限制 PyTorch 主线程并行度
-    torch.set_num_threads(len(main_cores))
-    
+    torch.set_num_threads(len(main_cores))    
     return main_cores, prefetch_cores
-# CURRENT_GPU_ID = int(os.environ.get("LOCAL_RANK", 0))  # 如果你是多卡 DDP，这里用 local_rank
-# main_set, prefetch_set = setup_numa_affinity(CURRENT_GPU_ID, num_main_cores=16, num_prefetch_cores=16)      
-# os.environ["STAR_PREFETCH_CORES"] = ",".join(map(str, prefetch_set))
+
 class TrainingEngine:
     def parse_args(self):
         parser = argparse.ArgumentParser()
@@ -180,13 +162,15 @@ class TrainingEngine:
         my_collate = partial(collate_and_merge, world_size=ctx.world_size)
         
         raw_loader = DataLoader(
-            subset, batch_sampler=sampler, collate_fn=my_collate, num_workers=0,  pin_memory=True)
-        original_prefetcher = HostToDevicePrefetcher(
+            subset, batch_sampler=sampler, collate_fn=my_collate, num_workers=1, prefetch_factor=2, 
+            persistent_workers=True, pin_memory=True
+        )
+        original_prefetcher = OptimizedPrefetcher(#HostToDevicePrefetcher(
             loader=raw_loader, device=self.device, partition_state=self.partition_state,
             context=self.graph_context, hist_cache=self.history_states_updater
         )
         #return original_prefetcher
-        return ThreadedPrefetcher(original_prefetcher)
+        return original_prefetcher#ThreadedPrefetcher(original_prefetcher)
 
     def prepare_model(self):
         mail_input = math.prod(self.graph_context.mailbox.shape[1:]) + self.cfg["train"]["dim_time"]
@@ -204,7 +188,7 @@ class TrainingEngine:
         self.model = nn.parallel.DistributedDataParallel(self.model, device_ids=[self.ctx.rank], find_unused_parameters=True)
         #self.model = torch.compile(self.model, mode="reduce-overhead", dynamic=True)
         self.predictor = EdgePredictor(hidden_dim).to(self.device)
-        self.optimizer = torch.optim.Adam(list(self.model.parameters()) + list(self.predictor.parameters()), lr=self.args.lr)
+        self.optimizer = torch.optim.Adam(list(self.model.parameters()) + list(self.predictor.parameters()), lr=self.args.lr, fused=True)
         self.criterion = nn.BCEWithLogitsLoss()
 
     def reset_states(self):
@@ -222,7 +206,7 @@ class TrainingEngine:
         #         self.model.module.memory.last_update.zero_()
         
         # if hasattr(self.graph_context, 'mailbox'):
-        #     self.graph_context.mailbox.reset()
+        #        self.graph_context.mailbox.reset()
 
     def run_epoch_step(self, loader, mode='train'):
         if mode == 'train': self.model.train()
@@ -253,13 +237,15 @@ class TrainingEngine:
                     pos_out = self.predictor(src_emb, dst_emb)
                     neg_out = torch.zeros_like(pos_out)
 
-                loss = self.criterion(
-                    torch.cat([pos_out, neg_out]),
-                    torch.cat([torch.ones_like(pos_out), torch.zeros_like(neg_out)])
-                )
+                #loss = self.criterion(
+                #    torch.cat([pos_out, neg_out]),
+                #    torch.cat([torch.ones_like(pos_out), torch.zeros_like(neg_out)])
+                #)
+                loss = torch.nn.functional.softplus(-pos_out).mean() + torch.nn.functional.softplus(neg_out).mean()
             nvtx.range_pop()
             nvtx.range_push(f"Step Backward")
             if mode == 'train':
+                #pass
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
@@ -286,6 +272,123 @@ class TrainingEngine:
                 print(f"Step {step} | Loss: {loss.item():.4f}")
         return total_loss/(step+1), sum(aps)/len(aps) if aps else 0, sum(aucs)/len(aucs) if aucs else 0
 
+    
+    # def run_epoch_step(self, loader, mode='train'):
+    #     if mode == 'train': self.model.train()
+    #     else: self.model.eval()
+        
+    #     total_loss = 0
+    #     aps, aucs = [], []
+    #     print(f"Running epoch step in {mode} mode...")
+
+    #     # === [新增] 定义 Profiler Schedule ===
+    #     # wait=1: 跳过第1个step (通常主要是数据加载初始化)
+    #     # warmup=1: 第2个step预热 (不记录)
+    #     # active=3: 记录第3,4,5个step (这就是你会看到的分析数据)
+    #     # repeat=1: 只执行一轮这样的循环
+    #     my_schedule = schedule(wait=1, warmup=1, active=3, repeat=1)
+
+    #     # 定义 trace 处理器，保存 JSON
+    #     def trace_handler(p):
+    #         output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
+    #         print(output)
+    #         # 文件名包含 rank 以区分多卡
+    #         p.export_chrome_trace(f"trace_rank{self.ctx.rank}.json")
+    #         print(f"Profiler trace saved to trace_rank{self.ctx.rank}_1.json")
+    #     @torch.jit.script
+    #     def fused_loss_calc(pos_out: torch.Tensor, neg_out: torch.Tensor) -> torch.Tensor:
+    #         # JIT 会把这些操作融合在一两个 Kernel 里，并省去 Python 调度
+    #         return torch.nn.functional.softplus(-pos_out).mean() + torch.nn.functional.softplus(neg_out).mean()
+
+    #     # === [新增] 开启 Profiler ===
+    #     # 仅在 train 模式且 rank 0 时开启 (避免生成太多文件，除非你想看所有卡的表现)
+    #     # 如果你想看所有卡，去掉 "if self.ctx.rank == 0 else None" 的判断
+    #     # tb_handler = torch.profiler.tensorboard_trace_handler(
+    #     #     dir_name=f"./log/profiler_rank{self.ctx.rank}",
+    #     #     use_gzip=True # 压缩日志，节省空间
+    #     # )
+
+    #     # 2. 开启 Profiler
+    #     use_profiler = False#(mode == 'train' and self.ctx.rank == 0)
+        
+    #     # 创建一个上下文管理器（如果是 eval 模式或者是其他 rank，就是一个空的上下文）
+    #     prof_ctx = profile(
+    #         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    #         schedule=my_schedule,
+    #         on_trace_ready=trace_handler,
+    #         record_shapes=True,
+    #         profile_memory=True,
+    #         with_stack=True # 关键：显示代码行号
+    #     ) if use_profiler else torch.autograd.detect_anomaly(False) # 这里的 else 只是为了语法占位，实际可以用 nullcontext
+
+    #     with prof_ctx as prof:
+    #         for step, batch in enumerate(loader):
+    #             # 为了快速获得 Profile，我们不需要跑完 400 步
+    #             # 只要跑完 active 的那几步 (wait+warmup+active = 1+1+3 = 5步) 就可以拿到数据了
+    #             if step >= 6 and use_profiler: 
+    #                 print("Profiling finished, stopping early for analysis.")
+    #                 break 
+                
+    #             #if(step>400): break
+    #             if batch is None: continue
+
+    #             # NVTX 标记会被 Profiler 自动捕获，保留即可
+    #             nvtx.range_push(f"Step Forward")
+                
+    #             with torch.set_grad_enabled(mode == 'train'):
+    #                 # --- 模型前向 ---
+    #                 h = self.model(
+    #                     blocks=batch.mfgs, routes=batch.routes, mailbox_data=batch.mailbox,
+    #                     upd_hook=self.history_states_updater.update_embedding_and_broadcast
+    #                 )
+                    
+    #                 task = batch.roots
+    #                 num_src = task['task_src'].shape[0]
+    #                 inv_map = task.get('inv_map')
+    #                 src_emb = h[inv_map[:num_src]]
+    #                 dst_emb = h[inv_map[num_src:2*num_src]]
+    #                 neg_emb = h[inv_map[2*num_src:]] if 'task_neg_dst' in task else None
+    #                 pos_out, neg_out = self.predictor(src_emb, dst_emb, h_neg_dst=neg_emb)
+    #                 loss = torch.nn.functional.softplus(-pos_out).mean() + torch.nn.functional.softplus(neg_out).mean()
+    #                 #fused_loss_calc(pos_out, neg_out)
+    #                 #loss = self.criterion(
+    #                 #    torch.cat([pos_out, neg_out]),
+    #                 #    torch.cat([torch.ones_like(pos_out), torch.zeros_like(neg_out)])
+    #                 #)
+    #             nvtx.range_pop() # End Forward
+
+    #             nvtx.range_push(f"Step Backward")
+    #             if mode == 'train':
+    #                 self.optimizer.zero_grad()
+    #                 loss.backward()
+    #                 self.optimizer.step()
+                
+    #             # Update memory
+    #             if self.cfg["train"]["memory_type"] is not None:
+    #                 with torch.no_grad():
+    #                     new_mem = self.model.last_memory
+    #                     new_mem_ts = self.model.last_ts
+    #                     self.graph_context.mailbox.generate_message_and_update(
+    #                         task, new_mem, new_mem_ts, self.graph_context
+    #                     )
+
+    #             total_loss += loss.item()
+    #             # with torch.no_grad():
+    #             #     # 暂时注释掉 metrics 计算以减少 Profile 噪音，除非你特别想看 metrics 的耗时
+    #             #     y_pred = torch.cat([pos_out, neg_out], dim=0).sigmoid().cpu()
+    #             #     y_true = torch.cat([torch.ones(pos_out.size(0)), torch.zeros(neg_out.size(0))], dim=0).cpu()
+    #             #     aps.append(average_precision_score(y_true, y_pred))
+                
+    #             nvtx.range_pop() # End Backward
+
+    #             if step % 100 == 0 and self.ctx.rank == 0:
+    #                 print(f"Step {step} | Loss: {loss.item():.4f}")
+                
+    #             # === [关键] 通知 Profiler 进入下一步 ===
+    #             if use_profiler:
+    #                 prof.step()
+
+    #     return total_loss/(step+1), 0, 0 # 临时返回 0,0 避免计算错误
     def run(self):
         # Create loaders lazily or upfront
         print('rank{} train_idx {} val_idx {} test_idx {}'.format(self.ctx.rank, self.train_idx, self.val_idx, self.test_idx))
