@@ -53,7 +53,6 @@ pip-delete-this-directory.txt
 # 3. 数据集与模型权重 (防止仓库膨胀)
 # ==========================================
 # 忽略所有数据文件夹
-data/
 datasets/
 raw_data/
 processed/
