@@ -8,6 +8,8 @@ lib/
 dist/
 lib/
 analysis/
+logs_*/
+*.out
 *.o
 *.obj
 *.so
