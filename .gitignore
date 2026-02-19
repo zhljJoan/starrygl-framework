@@ -6,6 +6,8 @@ build/
 bin/
 lib/
 dist/
+lib/
+analysis/
 *.o
 *.obj
 *.so
